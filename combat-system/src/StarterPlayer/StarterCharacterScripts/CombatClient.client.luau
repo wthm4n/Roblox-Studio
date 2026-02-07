@@ -111,40 +111,35 @@ end
 local VFXController = {}
 
 function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinisher: boolean)
-	local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
-	if not targetRoot then
+	local hrp = targetChar:FindFirstChild("HumanoidRootPart")
+	if not hrp then
 		return
 	end
 
-	-- Clone and play hit VFX
 	local hitVfx = TargetHitVfx:Clone()
-	hitVfx.Parent = targetRoot
+	hitVfx.Parent = workspace
+
+	-- R6 chest-level offset
+	local offset = CFrame.new(0, 1, -0.6)
 
 	if hitVfx:IsA("Model") then
-		hitVfx:PivotTo(targetRoot.CFrame)
+		hitVfx:PivotTo(hrp.CFrame * offset)
 	else
-		hitVfx.CFrame = targetRoot.CFrame
+		hitVfx.CFrame = hrp.CFrame * offset
 	end
 
 	-- Emit particles
-	for _, desc in hitVfx:GetDescendants() do
-		if desc:IsA("ParticleEmitter") then
-			local count = desc:GetAttribute("EmitCount") or 30
+	for _, v in hitVfx:GetDescendants() do
+		if v:IsA("ParticleEmitter") then
+			local count = v:GetAttribute("EmitCount") or 30
 			if isFinisher then
-				count = count * 2
+				count *= 2
 			end
-			desc:Emit(count)
-		elseif desc:IsA("Beam") then
-			desc.Enabled = true
-			task.delay(0.3, function()
-				if desc then
-					desc.Enabled = false
-				end
-			end)
+			v:Emit(count)
 		end
 	end
 
-	Debris:AddItem(hitVfx, 2)
+	Debris:AddItem(hitVfx, 0.5)
 end
 
 function VFXController.PlayBlockVFX(targetRoot: BasePart, isPerfect: boolean)
@@ -586,29 +581,6 @@ HitEvent.OnClientEvent:Connect(
 			color = SETTINGS.VFX.DamageNumbers.HeavyColor
 		end
 
-		-- Create damage number
-		CreateDamageNumber(targetRoot.Position, damage, color, isFinisher or wasPerfectBlock)
-
-		-- Play VFX
-		if wasBlocked then
-			VFXController.PlayBlockVFX(targetRoot, wasPerfectBlock)
-		else
-			VFXController.PlayHitVFX(targetChar, isHeavy, isFinisher)
-		end
-
-		-- Screen shake (only if it's our character getting hit)
-		if targetChar == character then
-			if wasBlocked then
-				VFXController.ScreenShake("Blocked")
-			elseif isFinisher then
-				VFXController.ScreenShake("Finisher")
-			elseif isHeavy then
-				VFXController.ScreenShake("Heavy")
-			else
-				VFXController.ScreenShake("Normal")
-			end
-		end
-
 		-- Play sound based on combo number
 		local soundId
 		if wasBlocked then
@@ -632,7 +604,30 @@ HitEvent.OnClientEvent:Connect(
 			sound.Volume = SETTINGS.Audio.HitVolume
 			sound.Parent = targetRoot
 			sound:Play()
-			Debris:AddItem(sound, 2)
+			Debris:AddItem(sound, 1)
+		end
+
+		-- Create damage number
+		CreateDamageNumber(targetRoot.Position, damage, color, isFinisher or wasPerfectBlock)
+
+		-- Play VFX
+		if wasBlocked then
+			VFXController.PlayBlockVFX(targetRoot, wasPerfectBlock)
+		else
+			VFXController.PlayHitVFX(targetChar, isHeavy, isFinisher)
+		end
+
+		-- Screen shake (only if it's our character getting hit)
+		if targetChar == character then
+			if wasBlocked then
+				VFXController.ScreenShake("Blocked")
+			elseif isFinisher then
+				VFXController.ScreenShake("Finisher")
+			elseif isHeavy then
+				VFXController.ScreenShake("Heavy")
+			else
+				VFXController.ScreenShake("Normal")
+			end
 		end
 	end
 )
