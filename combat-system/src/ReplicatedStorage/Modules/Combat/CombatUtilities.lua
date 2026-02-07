@@ -1,11 +1,13 @@
 --[[
 	CombatUtilities.lua
 	
-	Shared utility functions for combat system.
-	Includes validation, math helpers, and common operations.
+	Professional combat utilities with spatial hitbox system.
+	Supports multi-target hits, camera-based detection, and dash combat.
 	
-	Author: [Your Name]
+	Author: Combat System Rewrite
 ]]
+
+local Players = game:GetService("Players")
 
 local CombatUtilities = {}
 
@@ -13,91 +15,84 @@ local CombatUtilities = {}
 -- VALIDATION
 -- ========================================
 
-function CombatUtilities.ValidateCharacter(character)
-	if not character or not character:IsDescendantOf(workspace) then
-		return false, "Invalid character"
+function CombatUtilities.ValidatePlayer(player: Player): boolean
+	return player and player:IsA("Player") and player.Parent
+end
+
+function CombatUtilities.ValidateCharacter(character: Model): (boolean, string?, Humanoid?, BasePart?)
+	if not character or not character.Parent then
+		return false, "No character"
 	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then
-		return false, "Character is dead or has no humanoid"
+		return false, "Dead or no humanoid"
 	end
 
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
 	if not rootPart then
-		return false, "Character has no HumanoidRootPart"
+		return false, "No HumanoidRootPart"
 	end
 
 	return true, nil, humanoid, rootPart
 end
 
-function CombatUtilities.ValidatePlayer(player)
-	if not player or not player:IsDescendantOf(game:GetService("Players")) then
-		return false, "Invalid player"
-	end
-	return true
-end
-
 -- ========================================
--- TARGETING
+-- SPATIAL HITBOX SYSTEM (Multi-Target)
 -- ========================================
 
-function CombatUtilities.GetTargetsInRadius(origin: Vector3, radius: number, excludeCharacter: Model): { Model }
-	local targets = {}
-
-	for _, descendant in workspace:GetDescendants() do
-		if descendant:IsA("Humanoid") and descendant.Parent ~= excludeCharacter then
-			local targetCharacter = descendant.Parent
-			local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
-
-			if targetRoot and descendant.Health > 0 then
-				local distance = (origin - targetRoot.Position).Magnitude
-				if distance <= radius then
-					table.insert(targets, {
-						Character = targetCharacter,
-						Humanoid = descendant,
-						RootPart = targetRoot,
-						Distance = distance,
-					})
-				end
-			end
-		end
-	end
-
-	-- Sort by distance (closest first)
-	table.sort(targets, function(a, b)
-		return a.Distance < b.Distance
-	end)
-
-	return targets
-end
-
-function CombatUtilities.GetTargetsInCone(
-	origin: Vector3,
-	direction: Vector3,
+--[[
+	Gets ALL valid targets in a spherical hitbox around the attacker.
+	Supports:
+	- Multiple targets at once
+	- Camera-relative direction checking
+	- Dash combat (ignores angle when dashing)
+	- Customizable range and angle
+]]
+function CombatUtilities.GetTargetsInHitbox(
+	attackerCharacter: Model,
 	range: number,
-	angleInDegrees: number,
-	excludeCharacter: Model
-): { Model }
+	maxAngle: number, -- In degrees (e.g., 60 = 60 degree cone)
+	cameraLookVector: Vector3?, -- Optional: for camera-based attacks
+	isDashing: boolean? -- If true, hits in all directions
+): { { Character: Model, Humanoid: Humanoid, RootPart: BasePart } }
 	local targets = {}
-	local cosAngle = math.cos(math.rad(angleInDegrees))
 
-	for _, descendant in workspace:GetDescendants() do
-		if descendant:IsA("Humanoid") and descendant.Parent ~= excludeCharacter then
-			local targetCharacter = descendant.Parent
-			local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+	local attackerRoot = attackerCharacter:FindFirstChild("HumanoidRootPart")
+	if not attackerRoot then
+		return targets
+	end
 
-			if targetRoot and descendant.Health > 0 then
-				local distance = (origin - targetRoot.Position).Magnitude
+	-- Determine forward direction (camera or character facing)
+	local forwardVector = cameraLookVector or attackerRoot.CFrame.LookVector
+	local attackerPos = attackerRoot.Position
 
+	-- Find all characters in range
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		if character and character ~= attackerCharacter then
+			local isValid, _, targetHumanoid, targetRoot = CombatUtilities.ValidateCharacter(character)
+
+			if isValid then
+				local distance = (targetRoot.Position - attackerPos).Magnitude
+
+				-- Check range
 				if distance <= range then
-					local toTarget = (targetRoot.Position - origin).Unit
-					local dot = direction:Dot(toTarget)
+					-- Check angle (unless dashing = 360 degree hits)
+					local angleCheck = true
 
-					if dot >= cosAngle then
+					if not isDashing then
+						local toTarget = (targetRoot.Position - attackerPos).Unit
+						local dotProduct = forwardVector:Dot(toTarget)
+						local angleInDegrees = math.deg(math.acos(dotProduct))
+
+						angleCheck = angleInDegrees <= maxAngle
+					end
+
+					if angleCheck then
 						table.insert(targets, {
-							Character = targetCharacter,
-							Humanoid = descendant,
+							Character = character,
+							Humanoid = targetHumanoid,
 							RootPart = targetRoot,
 							Distance = distance,
 						})
@@ -115,144 +110,62 @@ function CombatUtilities.GetTargetsInCone(
 	return targets
 end
 
-function CombatUtilities.GetTargetInFront(character: Model, range: number, angleThreshold: number): Model?
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then
-		return nil
-	end
-
-	local closestTarget = nil
-	local closestDistance = range
-
-	for _, descendant in workspace:GetDescendants() do
-		if descendant:IsA("Humanoid") and descendant.Parent ~= character then
-			local targetCharacter = descendant.Parent
-			local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
-
-			if targetRoot and descendant.Health > 0 then
-				local distance = (rootPart.Position - targetRoot.Position).Magnitude
-
-				if distance < closestDistance then
-					local direction = (targetRoot.Position - rootPart.Position).Unit
-					local lookVector = rootPart.CFrame.LookVector
-					local dot = direction:Dot(lookVector)
-
-					if dot > angleThreshold then
-						closestDistance = distance
-						closestTarget = {
-							Character = targetCharacter,
-							Humanoid = descendant,
-							RootPart = targetRoot,
-							Distance = distance,
-						}
-					end
-				end
-			end
-		end
-	end
-
-	return closestTarget
-end
-
 -- ========================================
--- PHYSICS & KNOCKBACK
+-- KNOCKBACK SYSTEM
 -- ========================================
 
 function CombatUtilities.ApplyKnockback(
 	targetRoot: BasePart,
 	direction: Vector3,
-	horizontalPower: number,
-	verticalPower: number,
+	horizontalForce: number,
+	verticalForce: number,
 	duration: number
 )
-	if not targetRoot or not targetRoot:IsDescendantOf(workspace) then
-		return
+	-- Remove existing knockback
+	local existingKB = targetRoot:FindFirstChild("CombatKnockback")
+	if existingKB then
+		existingKB:Destroy()
 	end
 
+	-- Create new knockback
 	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.Name = "CombatKnockback"
 	bodyVelocity.MaxForce = Vector3.new(100000, 100000, 100000)
-	bodyVelocity.Velocity = (direction * horizontalPower) + Vector3.new(0, verticalPower, 0)
+
+	-- Calculate velocity (horizontal + vertical)
+	local horizontalDir = Vector3.new(direction.X, 0, direction.Z).Unit
+	local velocity = (horizontalDir * horizontalForce) + Vector3.new(0, verticalForce, 0)
+
+	bodyVelocity.Velocity = velocity
 	bodyVelocity.Parent = targetRoot
 
-	game:GetService("Debris"):AddItem(bodyVelocity, duration or 0.2)
+	-- Remove after duration
+	task.delay(duration, function()
+		if bodyVelocity.Parent then
+			bodyVelocity:Destroy()
+		end
+	end)
 end
+
+-- ========================================
+-- STUN SYSTEM
+-- ========================================
 
 function CombatUtilities.ApplyStun(humanoid: Humanoid, duration: number)
 	if not humanoid or humanoid.Health <= 0 then
 		return
 	end
 
-	local originalWalkSpeed = humanoid.WalkSpeed
-	local originalJumpPower = humanoid.JumpPower
-
+	-- Store original WalkSpeed
+	local originalSpeed = humanoid.WalkSpeed
 	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
 
+	-- Restore after duration
 	task.delay(duration, function()
-		if humanoid and humanoid.Parent then
-			humanoid.WalkSpeed = originalWalkSpeed
-			humanoid.JumpPower = originalJumpPower
+		if humanoid and humanoid.Health > 0 then
+			humanoid.WalkSpeed = originalSpeed
 		end
 	end)
-end
-
--- ========================================
--- MATH HELPERS
--- ========================================
-
-function CombatUtilities.Lerp(a: number, b: number, t: number): number
-	return a + (b - a) * t
-end
-
-function CombatUtilities.Clamp(value: number, min: number, max: number): number
-	return math.min(math.max(value, min), max)
-end
-
-function CombatUtilities.RandomVector3(min: number, max: number): Vector3
-	return Vector3.new(math.random(min, max), math.random(min, max), math.random(min, max))
-end
-
-function CombatUtilities.RandomInRadius(center: Vector3, radius: number): Vector3
-	local angle = math.random() * math.pi * 2
-	local distance = math.random() * radius
-
-	return center + Vector3.new(math.cos(angle) * distance, 0, math.sin(angle) * distance)
-end
-
--- ========================================
--- TIMING & COOLDOWNS
--- ========================================
-
-function CombatUtilities.CreateCooldownTracker()
-	local cooldowns = {}
-
-	return {
-		Set = function(key: string, duration: number)
-			cooldowns[key] = tick() + duration
-		end,
-
-		Get = function(key: string): number
-			local endTime = cooldowns[key]
-			if not endTime then
-				return 0
-			end
-
-			local remaining = endTime - tick()
-			return math.max(0, remaining)
-		end,
-
-		IsReady = function(key: string): boolean
-			return (cooldowns[key] or 0) <= tick()
-		end,
-
-		Reset = function(key: string)
-			cooldowns[key] = nil
-		end,
-
-		ResetAll = function()
-			cooldowns = {}
-		end,
-	}
 end
 
 -- ========================================
@@ -260,38 +173,56 @@ end
 -- ========================================
 
 function CombatUtilities.CreateRateLimiter(maxPerSecond: number)
-	local requests = {}
+	local tracker = {}
 
 	return {
-		Check = function(key: string): boolean
+		Check = function(userId: number): boolean
 			local currentTime = tick()
 
-			-- Clean old requests
-			if requests[key] then
-				requests[key] = table.create(#requests[key])
-				for _, timestamp in requests[key] do
-					if currentTime - timestamp < 1 then
-						table.insert(requests[key], timestamp)
-					end
-				end
-			else
-				requests[key] = {}
+			if not tracker[userId] then
+				tracker[userId] = { count = 1, lastReset = currentTime }
+				return true
 			end
 
-			-- Check if over limit
-			if #requests[key] >= maxPerSecond then
+			local data = tracker[userId]
+
+			-- Reset if 1 second has passed
+			if currentTime - data.lastReset >= 1 then
+				data.count = 1
+				data.lastReset = currentTime
+				return true
+			end
+
+			-- Check limit
+			if data.count >= maxPerSecond then
 				return false
 			end
 
-			-- Add new request
-			table.insert(requests[key], currentTime)
+			data.count += 1
 			return true
-		end,
-
-		Reset = function(key: string)
-			requests[key] = nil
 		end,
 	}
 end
 
-return table.freeze(CombatUtilities)
+function CombatUtilities.CreateCooldownTracker()
+	local cooldowns = {}
+
+	return {
+		IsOnCooldown = function(key: string, duration: number): boolean
+			local currentTime = tick()
+
+			if cooldowns[key] and currentTime < cooldowns[key] then
+				return true
+			end
+
+			cooldowns[key] = currentTime + duration
+			return false
+		end,
+
+		Reset = function(key: string)
+			cooldowns[key] = nil
+		end,
+	}
+end
+
+return CombatUtilities
