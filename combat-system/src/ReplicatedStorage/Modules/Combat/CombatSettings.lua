@@ -48,7 +48,7 @@ CombatSettings.M1 = {
 	ComboResetTime = 2.5,
 
 	-- Timing
-	AttackCooldown = 0.3,
+	AttackCooldown = 0.25, -- Faster combos (was 0.3)
 
 	-- SPATIAL HITBOX (Multi-Target)
 	HitboxRange = 12, -- Sphere radius
@@ -138,22 +138,22 @@ CombatSettings.Animations = {
 	M1 = {
 		Id = "rbxassetid://108727746476303",
 		Duration = 0.45,
-		HitFrame = 0.2, -- Hit earlier for snappier feel
+		HitFrame = 0.15, -- Earlier for instant feel
 	},
 	M2 = {
 		Id = "rbxassetid://101585643838515",
 		Duration = 0.45,
-		HitFrame = 0.2,
+		HitFrame = 0.15,
 	},
 	M3 = {
 		Id = "rbxassetid://138408280930081",
 		Duration = 0.5,
-		HitFrame = 0.25,
+		HitFrame = 0.2,
 	},
 	M4 = {
 		Id = "rbxassetid://100818712303477",
 		Duration = 0.65,
-		HitFrame = 0.3,
+		HitFrame = 0.25,
 	},
 }
 
