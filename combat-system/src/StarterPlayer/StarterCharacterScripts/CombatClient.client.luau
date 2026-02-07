@@ -54,6 +54,64 @@ local animations = {}
 local animator = nil
 
 -- ========================================
+-- SOUND PRE-CACHE (Eliminates lag on first play)
+-- ========================================
+
+local soundCache = {}
+
+local function PreloadSounds()
+	local ContentProvider = game:GetService("ContentProvider")
+	
+	-- Pre-create all combat sounds
+	local soundsToCache = {
+		M1 = SETTINGS.Audio.M1Sound,
+		M2 = SETTINGS.Audio.M2Sound,
+		M3 = SETTINGS.Audio.M3Sound,
+		M4 = SETTINGS.Audio.M4Sound,
+		Block = SETTINGS.Audio.BlockHit,
+	}
+	
+	local assetsToPreload = {}
+	
+	for name, soundId in soundsToCache do
+		if soundId and soundId ~= "" then
+			table.insert(assetsToPreload, soundId)
+		end
+	end
+	
+	-- Preload all at once (faster)
+	ContentProvider:PreloadAsync(assetsToPreload)
+	
+	print("✅ Combat sounds pre-cached (" .. #assetsToPreload .. " sounds)")
+end
+
+-- Optimized instant sound playback
+local function PlayHitSound(soundId: string, position: Vector3)
+	if not soundId or soundId == "" then
+		return
+	end
+	
+	local sound = Instance.new("Sound")
+	sound.SoundId = soundId
+	sound.Volume = SETTINGS.Audio.HitVolume
+	sound.PlayOnRemove = false
+	
+	-- Create attachment for 3D positioning
+	local attachment = Instance.new("Attachment")
+	attachment.WorldPosition = position
+	attachment.Parent = workspace.Terrain
+	
+	sound.Parent = attachment
+	sound:Play()
+	
+	-- Cleanup
+	Debris:AddItem(attachment, 1)
+end
+
+-- Pre-load sounds immediately
+task.spawn(PreloadSounds)
+
+-- ========================================
 -- DAMAGE NUMBERS
 -- ========================================
 
@@ -118,8 +176,6 @@ function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinishe
 	end
 
 	local hitVfx = TargetHitVfx:Clone()
-	hitVfx.Parent = workspace
-
 	local offset = CFrame.new(0, 1, -0.6)
 
 	if hitVfx:IsA("Model") then
@@ -127,7 +183,10 @@ function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinishe
 	else
 		hitVfx.CFrame = hrp.CFrame * offset
 	end
+	
+	hitVfx.Parent = workspace -- Parent AFTER positioning for instant appearance
 
+	-- Emit particles IMMEDIATELY
 	for _, v in hitVfx:GetDescendants() do
 		if v:IsA("ParticleEmitter") then
 			local count = v:GetAttribute("EmitCount") or 30
@@ -143,14 +202,16 @@ end
 
 function VFXController.PlayBlockVFX(targetRoot: BasePart, isPerfect: boolean)
 	local blockEffect = BlockVfx:Clone()
-	blockEffect.Parent = targetRoot
 
 	if blockEffect:IsA("Model") then
 		blockEffect:PivotTo(targetRoot.CFrame)
 	else
 		blockEffect.CFrame = targetRoot.CFrame
 	end
+	
+	blockEffect.Parent = targetRoot -- Parent AFTER positioning
 
+	-- Emit particles IMMEDIATELY
 	for _, desc in blockEffect:GetDescendants() do
 		if desc:IsA("ParticleEmitter") then
 			local count = desc:GetAttribute("EmitCount") or 20
@@ -254,10 +315,11 @@ local function LoadAnimations()
 	animations.Walk = load(SETTINGS.Animations.Walk)
 	animations.Sprint = load(SETTINGS.Animations.Sprint)
 
+	-- Fixed dash animation names to match direction
 	animations.FrontDash = load(SETTINGS.Animations.FrontDash)
 	animations.BackDash = load(SETTINGS.Animations.BackDash)
-	animations.SideDashLeft = load(SETTINGS.Animations.SideDashLeft)
-	animations.SideDashRight = load(SETTINGS.Animations.SideDashRight)
+	animations.LeftDash = load(SETTINGS.Animations.SideDashLeft) -- Maps to Left direction
+	animations.RightDash = load(SETTINGS.Animations.SideDashRight) -- Maps to Right direction
 
 	animations.M1 = load(SETTINGS.Animations.M1.Id)
 	animations.M2 = load(SETTINGS.Animations.M2.Id)
@@ -361,10 +423,13 @@ local function PerformDash(direction: string)
 		currentMoveAnim:Stop()
 	end
 
-	-- Play dash animation
-	local dashAnim = animations[direction .. "Dash"]
+	-- Play dash animation with proper direction mapping
+	local animName = direction .. "Dash"
+	local dashAnim = animations[animName]
 	if dashAnim then
 		dashAnim:Play()
+	else
+		warn("Dash animation not found: " .. animName)
 	end
 
 	-- Calculate direction (CAMERA-RELATIVE)
@@ -375,9 +440,9 @@ local function PerformDash(direction: string)
 		dashDir = Vector3.new(cameraCF.LookVector.X, 0, cameraCF.LookVector.Z).Unit
 	elseif direction == "Back" then
 		dashDir = -Vector3.new(cameraCF.LookVector.X, 0, cameraCF.LookVector.Z).Unit
-	elseif direction == "SideLeft" then
+	elseif direction == "Left" then -- Fixed: was "SideLeft"
 		dashDir = -Vector3.new(cameraCF.RightVector.X, 0, cameraCF.RightVector.Z).Unit
-	elseif direction == "SideRight" then
+	elseif direction == "Right" then -- Fixed: was "SideRight"
 		dashDir = Vector3.new(cameraCF.RightVector.X, 0, cameraCF.RightVector.Z).Unit
 	end
 
@@ -427,14 +492,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		keysPressed.D = true
 	end
 
-	-- Dash
+	-- Dash (Fixed direction names)
 	if input.KeyCode == SETTINGS.Dash.Key then
 		if keysPressed.S then
 			PerformDash("Back")
 		elseif keysPressed.A then
-			PerformDash("SideLeft")
+			PerformDash("Left") -- Fixed: was "SideLeft"
 		elseif keysPressed.D then
-			PerformDash("SideRight")
+			PerformDash("Right") -- Fixed: was "SideRight"
 		else
 			PerformDash("Front")
 		end
@@ -591,7 +656,7 @@ HitEvent.OnClientEvent:Connect(
 			color = SETTINGS.VFX.DamageNumbers.HeavyColor
 		end
 
-		-- INSTANT SOUND (plays at target location when hit applies)
+		-- INSTANT SOUND (optimized playback)
 		local soundId
 		if wasBlocked then
 			soundId = SETTINGS.Audio.BlockHit
@@ -607,13 +672,8 @@ HitEvent.OnClientEvent:Connect(
 			end
 		end
 
-		if soundId and soundId ~= "" then
-			local sound = Instance.new("Sound")
-			sound.SoundId = soundId
-			sound.Volume = SETTINGS.Audio.HitVolume
-			sound.Parent = targetRoot
-			sound:Play()
-			Debris:AddItem(sound, 1)
+		if soundId then
+			PlayHitSound(soundId, targetRoot.Position)
 		end
 
 		-- Create damage number
