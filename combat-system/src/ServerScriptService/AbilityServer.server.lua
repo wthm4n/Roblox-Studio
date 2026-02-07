@@ -4,7 +4,7 @@
 	Server-side ability system with validation and anti-exploit.
 	Manages ability activation, cooldowns, and damage application.
 	
-	Author: [Your Name]
+	Author: [wthm4n]
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

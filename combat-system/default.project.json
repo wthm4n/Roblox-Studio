@@ -4,11 +4,9 @@
     "$className": "DataModel",
 
     "ReplicatedStorage": {
-      "$path": "src/ReplicatedStorage",
-      "Assets": {
-       "$ignore" : true
-      },
+     "$path": "src/ReplicatedStorage"
     },
+
 
     "ServerScriptService": {
       "$path": "src/ServerScriptService"

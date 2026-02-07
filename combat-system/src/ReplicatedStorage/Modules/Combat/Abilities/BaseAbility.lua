@@ -253,9 +253,6 @@ function AbilityBase:Validate(): (boolean, string?)
 	return true
 end
 
--- ========================================
--- SERIALIZATION (for debugging)
--- ========================================
 
 function AbilityBase:ToTable(): { [string]: any }
 	return {
