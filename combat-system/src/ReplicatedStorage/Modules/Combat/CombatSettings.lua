@@ -16,12 +16,12 @@ local CombatSettings = {}
 CombatSettings.Player = {
 	MaxHealth = 100,
 	HealthRegen = 2,
-	
+
 	-- Movement speeds
 	WalkSpeed = 16,
 	SprintSpeed = 27.2, -- 1.7x of walk speed
 	BlockSpeed = 8,
-	
+
 	-- Sprint settings
 	SprintKey = Enum.KeyCode.LeftControl,
 	SprintStaminaCost = 0, -- Future: stamina system
@@ -35,28 +35,28 @@ CombatSettings.M1 = {
 	BaseDamage = 8,
 	HeavyDamage = 15,
 	FinisherDamage = 20,
-	
+
 	-- Heavy attack conditions (any of these triggers heavy)
 	HeavyConditions = {
 		RequiresSprint = true, -- Must be sprinting
 		RequiresJump = true, -- OR must be in air
 		MinVelocity = 20, -- OR moving faster than this
 	},
-	
+
 	-- Combo system
 	MaxCombo = 4,
 	ComboResetTime = 2.5,
-	
+
 	-- Timing
 	AttackCooldown = 0.35, -- Minimum time between attacks
 	AttackRange = 9,
 	AttackAngle = 60, -- Degrees for hit detection cone
-	
+
 	-- Knockback (horizontal, vertical)
-	NormalKnockback = {25, 8},
-	HeavyKnockback = {45, 15},
-	FinisherKnockback = {65, 25},
-	
+	NormalKnockback = { 25, 8 },
+	HeavyKnockback = { 45, 15 },
+	FinisherKnockback = { 65, 25 },
+
 	-- Stun on finisher
 	FinisherStunDuration = 0.8,
 }
@@ -94,23 +94,23 @@ CombatSettings.VFX = {
 		FinisherColor = Color3.fromRGB(255, 50, 50), -- Red
 		BlockedColor = Color3.fromRGB(100, 200, 255), -- Blue
 		CriticalColor = Color3.fromRGB(255, 215, 0), -- Gold
-		
+
 		Size = 24,
 		Duration = 1.5,
 		RiseSpeed = 2,
 	},
-	
+
 	-- VFX paths (from ReplicatedStorage.Assets.CombatSystem)
 	ConstantArmAura = "ConstantArmAura",
 	TargetHitVfx = "TargetHitVfx",
 	BlockVfx = "BlockVfx",
-	
+
 	-- Screen shake
 	ScreenShake = {
-		Normal = {Magnitude = 0.3, Duration = 0.15},
-		Heavy = {Magnitude = 0.6, Duration = 0.25},
-		Finisher = {Magnitude = 1.0, Duration = 0.35},
-		Blocked = {Magnitude = 0.2, Duration = 0.1},
+		Normal = { Magnitude = 0.3, Duration = 0.15 },
+		Heavy = { Magnitude = 0.6, Duration = 0.25 },
+		Finisher = { Magnitude = 1.0, Duration = 0.35 },
+		Blocked = { Magnitude = 0.2, Duration = 0.1 },
 	},
 }
 
@@ -122,13 +122,13 @@ CombatSettings.Animations = {
 	Walk = "rbxassetid://116220790835806",
 	Run = "rbxassetid://76377318361443",
 	Sprint = "rbxassetid://76377318361443", -- Use run anim for sprint
-	
+
 	-- Dashing
 	FrontDash = "rbxassetid://92389271308997",
 	BackDash = "rbxassetid://99261664117383",
 	SideDashLeft = "rbxassetid://126714519140500",
 	SideDashRight = "rbxassetid://119606631904406",
-	
+
 	-- M1 Combo (4 attacks)
 	M1 = {
 		Id = "rbxassetid://108727746476303",
@@ -166,13 +166,18 @@ CombatSettings.AntiExploit = {
 -- AUDIO
 -- ========================================
 CombatSettings.Audio = {
-	NormalHit = "rbxassetid://72142112079276",
-	HeavyHit = "rbxassetid://72142112079276", -- Replace with heavy sound
-	BlockHit = "rbxassetid://9114487369",
+	-- Individual M1 sounds (replace with your sound IDs)
+	M1Sound = "rbxassetid://124916598999754",
+	M2Sound = "rbxassetid://77412258788453",
+	M3Sound = "rbxassetid://108843398435059",
+	M4Sound = "rbxassetid://124916598999754",
+
+	-- Other sounds
+	BlockHit = "rbxassetid://137630794322989",
 	Dash = "", -- Add dash sound
-	Finisher = "", -- Add finisher sound
-	
+
 	Volume = 0.6,
+	HitVolume = 0.7, -- Volume specifically for M1 hits
 }
 
 return table.freeze(CombatSettings)
