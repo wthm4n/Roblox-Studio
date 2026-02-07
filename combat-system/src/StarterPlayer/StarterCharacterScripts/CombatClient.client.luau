@@ -26,6 +26,7 @@ local M1Event = RemoteFolder:WaitForChild("M1Attack")
 local BlockEvent = RemoteFolder:WaitForChild("Block")
 local HitEvent = RemoteFolder:WaitForChild("Hit")
 local DashEvent = RemoteFolder:WaitForChild("Dash")
+local SoundEvent = RemoteFolder:WaitForChild("PlaySound") -- Instant sound sync
 
 local CombatVFX = ReplicatedStorage.Assets.CombatSystem:WaitForChild("CombatVfx")
 local ConstantArmAura = CombatVFX:WaitForChild("ConstantArmAura")
@@ -61,7 +62,7 @@ local soundCache = {}
 
 local function PreloadSounds()
 	local ContentProvider = game:GetService("ContentProvider")
-	
+
 	-- Pre-create all combat sounds
 	local soundsToCache = {
 		M1 = SETTINGS.Audio.M1Sound,
@@ -70,18 +71,18 @@ local function PreloadSounds()
 		M4 = SETTINGS.Audio.M4Sound,
 		Block = SETTINGS.Audio.BlockHit,
 	}
-	
+
 	local assetsToPreload = {}
-	
+
 	for name, soundId in soundsToCache do
 		if soundId and soundId ~= "" then
 			table.insert(assetsToPreload, soundId)
 		end
 	end
-	
+
 	-- Preload all at once (faster)
 	ContentProvider:PreloadAsync(assetsToPreload)
-	
+
 	print("✅ Combat sounds pre-cached (" .. #assetsToPreload .. " sounds)")
 end
 
@@ -90,20 +91,20 @@ local function PlayHitSound(soundId: string, position: Vector3)
 	if not soundId or soundId == "" then
 		return
 	end
-	
+
 	local sound = Instance.new("Sound")
 	sound.SoundId = soundId
 	sound.Volume = SETTINGS.Audio.HitVolume
 	sound.PlayOnRemove = false
-	
+
 	-- Create attachment for 3D positioning
 	local attachment = Instance.new("Attachment")
 	attachment.WorldPosition = position
 	attachment.Parent = workspace.Terrain
-	
+
 	sound.Parent = attachment
 	sound:Play()
-	
+
 	-- Cleanup
 	Debris:AddItem(attachment, 1)
 end
@@ -183,7 +184,7 @@ function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinishe
 	else
 		hitVfx.CFrame = hrp.CFrame * offset
 	end
-	
+
 	hitVfx.Parent = workspace -- Parent AFTER positioning for instant appearance
 
 	-- Emit particles IMMEDIATELY
@@ -208,7 +209,7 @@ function VFXController.PlayBlockVFX(targetRoot: BasePart, isPerfect: boolean)
 	else
 		blockEffect.CFrame = targetRoot.CFrame
 	end
-	
+
 	blockEffect.Parent = targetRoot -- Parent AFTER positioning
 
 	-- Emit particles IMMEDIATELY
@@ -564,7 +565,7 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 end)
 
 -- ========================================
--- M1 ATTACK SYSTEM (Camera-Based)
+-- M1 ATTACK SYSTEM (Camera-Based + Client Prediction)
 -- ========================================
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -577,7 +578,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if state.isBlocking then
 			return
 		end
-		
+
 		if state.isAttacking and not SETTINGS.Dash.AllowAttackDuringDash then
 			return
 		end
@@ -588,6 +589,13 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		end
 
 		state.lastAttack = currentTime
+
+		-- CLIENT-SIDE PREDICTION: Play swing sound instantly
+		local swingSound = Instance.new("Sound")
+		swingSound.SoundId = "rbxassetid://0" -- Add swing whoosh sound here if you have one
+		swingSound.Volume = 0.3
+		swingSound.Parent = rootPart
+		-- swingSound:Play() -- Uncomment if you add a swing sound
 
 		-- Send camera direction to server for camera-based hitbox
 		local cameraLookVector = nil
@@ -608,10 +616,20 @@ M1Event.OnClientEvent:Connect(function(combo: number, isHeavy: boolean, isFinish
 	state.isAttacking = true
 	state.currentCombo = combo
 
+	-- STOP ALL PREVIOUS M1 ANIMATIONS (prevents blending issues)
+	for i = 1, 4 do
+		local animKey = "M" .. i
+		local anim = animations[animKey]
+		if anim and anim.IsPlaying then
+			anim:Stop(0) -- Instant stop (no fade time)
+		end
+	end
+
+	-- Play the new animation
 	local animKey = "M" .. combo
 	local anim = animations[animKey]
 	if anim then
-		anim:Play()
+		anim:Play(0.05, 1, 1) -- Fast fade in, normal weight, normal speed
 	end
 
 	local animData = SETTINGS.Animations[animKey]
@@ -656,25 +674,8 @@ HitEvent.OnClientEvent:Connect(
 			color = SETTINGS.VFX.DamageNumbers.HeavyColor
 		end
 
-		-- INSTANT SOUND (optimized playback)
-		local soundId
-		if wasBlocked then
-			soundId = SETTINGS.Audio.BlockHit
-		else
-			if combo == 1 then
-				soundId = SETTINGS.Audio.M1Sound
-			elseif combo == 2 then
-				soundId = SETTINGS.Audio.M2Sound
-			elseif combo == 3 then
-				soundId = SETTINGS.Audio.M3Sound
-			elseif combo == 4 then
-				soundId = SETTINGS.Audio.M4Sound
-			end
-		end
-
-		if soundId then
-			PlayHitSound(soundId, targetRoot.Position)
-		end
+		-- Note: Sound is now played via instant SoundEvent (unreliable network)
+		-- This provides the lowest possible latency for audio feedback
 
 		-- Create damage number
 		CreateDamageNumber(targetRoot.Position, damage, color, isFinisher or wasPerfectBlock)
@@ -740,6 +741,30 @@ character.Humanoid.Died:Connect(function()
 	if state.activeDashBodyVelocity then
 		state.activeDashBodyVelocity:Destroy()
 		state.activeDashBodyVelocity = nil
+	end
+end)
+
+-- ========================================
+-- INSTANT SOUND PLAYBACK (Unreliable Network)
+-- ========================================
+
+SoundEvent.OnClientEvent:Connect(function(position: Vector3, soundKey: string)
+	-- Map sound key to actual ID
+	local soundId
+	if soundKey == "M1Sound" then
+		soundId = SETTINGS.Audio.M1Sound
+	elseif soundKey == "M2Sound" then
+		soundId = SETTINGS.Audio.M2Sound
+	elseif soundKey == "M3Sound" then
+		soundId = SETTINGS.Audio.M3Sound
+	elseif soundKey == "M4Sound" then
+		soundId = SETTINGS.Audio.M4Sound
+	elseif soundKey == "BlockHit" then
+		soundId = SETTINGS.Audio.BlockHit
+	end
+
+	if soundId then
+		PlayHitSound(soundId, position)
 	end
 end)
 

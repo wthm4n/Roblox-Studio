@@ -39,6 +39,7 @@ local M1Event = CreateRemote("M1Attack", "RemoteEvent")
 local BlockEvent = CreateRemote("Block", "RemoteEvent")
 local HitEvent = CreateRemote("Hit", "RemoteEvent")
 local DashEvent = CreateRemote("Dash", "RemoteEvent")
+local SoundEvent = CreateRemote("PlaySound", "UnreliableRemoteEvent") -- For instant sound sync
 
 -- ========================================
 -- PLAYER DATA
@@ -272,17 +273,33 @@ M1Event.OnServerEvent:Connect(function(player: Player, cameraLookVector: Vector3
 	-- Update state
 	data.IsAttacking = true
 	data.LastAttackTime = currentTime
+
+	-- Increment combo BEFORE checking max
 	local combo = CombatService.IncrementCombo(data)
+
+	-- Check if this was the finisher (M4)
+	local isFinisher = combo == CombatSettings.M1.MaxCombo
+
+	-- COMBO LOOP FIX: Reset to 1 after M4
+	if isFinisher then
+		-- Schedule combo reset to M1 after this attack
+		if data.ComboResetTask then
+			task.cancel(data.ComboResetTask)
+		end
+		data.ComboResetTask = task.delay(0.1, function()
+			data.Combo = 0 -- Will become 1 on next attack
+			data.ComboResetTask = nil
+		end)
+	end
 
 	-- Determine attack type
 	local isHeavy = CombatService.IsHeavyAttack(player, rootPart, data.IsDashing)
-	local isFinisher = combo == CombatSettings.M1.MaxCombo
 
 	-- Animation data
 	local animKey = "M" .. combo
 	local animData = CombatSettings.Animations[animKey]
 	local animDuration = animData and animData.Duration or 0.5
-	local hitFrame = animData and animData.HitFrame or 0.15 -- Earlier hit frame (was 0.2)
+	local hitFrame = animData and animData.HitFrame or 0.15
 
 	-- Send animation to client
 	M1Event:FireClient(player, combo, isHeavy, isFinisher)
@@ -355,6 +372,31 @@ M1Event.OnServerEvent:Connect(function(player: Player, cameraLookVector: Vector3
 						wasBlocked,
 						wasPerfectBlock
 					)
+				end
+
+				-- INSTANT SOUND: unreliable network for lowest latency
+				local soundId
+				if wasBlocked then
+					soundId = "BlockHit"
+				else
+					if combo == 1 then
+						soundId = "M1Sound"
+					elseif combo == 2 then
+						soundId = "M2Sound"
+					elseif combo == 3 then
+						soundId = "M3Sound"
+					elseif combo == 4 then
+						soundId = "M4Sound"
+					end
+				end
+				SoundEvent:FireClient(player, target.RootPart.Position, soundId)
+				for _, p in Players:GetPlayers() do
+					if p ~= player and p.Character then
+						local r = p.Character:FindFirstChild("HumanoidRootPart")
+						if r and (r.Position - target.RootPart.Position).Magnitude < 100 then
+							SoundEvent:FireClient(p, target.RootPart.Position, soundId)
+						end
+					end
 				end
 			end
 		end

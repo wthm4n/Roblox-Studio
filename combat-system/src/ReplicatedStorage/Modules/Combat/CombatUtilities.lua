@@ -57,7 +57,7 @@ function CombatUtilities.GetTargetsInHitbox(
 	isDashing: boolean? -- If true, hits in all directions
 ): { { Character: Model, Humanoid: Humanoid, RootPart: BasePart } }
 	local targets = {}
-	
+
 	local attackerRoot = attackerCharacter:FindFirstChild("HumanoidRootPart")
 	if not attackerRoot then
 		return targets
@@ -71,29 +71,29 @@ function CombatUtilities.GetTargetsInHitbox(
 	local function CheckCharacter(character: Model)
 		if character and character ~= attackerCharacter then
 			local isValid, _, targetHumanoid, targetRoot = CombatUtilities.ValidateCharacter(character)
-			
+
 			if isValid then
 				local distance = (targetRoot.Position - attackerPos).Magnitude
-				
+
 				-- Check range
 				if distance <= range then
 					-- Check angle (unless dashing = 360 degree hits)
 					local angleCheck = true
-					
+
 					if not isDashing then
 						local toTarget = (targetRoot.Position - attackerPos).Unit
 						local dotProduct = forwardVector:Dot(toTarget)
 						local angleInDegrees = math.deg(math.acos(math.clamp(dotProduct, -1, 1)))
-						
+
 						angleCheck = angleInDegrees <= maxAngle
 					end
-					
+
 					if angleCheck then
 						table.insert(targets, {
 							Character = character,
 							Humanoid = targetHumanoid,
 							RootPart = targetRoot,
-							Distance = distance
+							Distance = distance,
 						})
 					end
 				end
@@ -105,13 +105,13 @@ function CombatUtilities.GetTargetsInHitbox(
 	for _, player in Players:GetPlayers() do
 		CheckCharacter(player.Character)
 	end
-	
+
 	-- Find all NPC characters in workspace
 	for _, obj in workspace:GetChildren() do
 		-- Check if it's a potential NPC (has Humanoid, not a player character)
 		if obj:IsA("Model") and obj:FindFirstChildOfClass("Humanoid") then
 			local isPlayerChar = false
-			
+
 			-- Skip if it's a player character
 			for _, player in Players:GetPlayers() do
 				if player.Character == obj then
@@ -119,7 +119,7 @@ function CombatUtilities.GetTargetsInHitbox(
 					break
 				end
 			end
-			
+
 			if not isPlayerChar then
 				CheckCharacter(obj)
 			end
@@ -155,11 +155,11 @@ function CombatUtilities.ApplyKnockback(
 	local bodyVelocity = Instance.new("BodyVelocity")
 	bodyVelocity.Name = "CombatKnockback"
 	bodyVelocity.MaxForce = Vector3.new(100000, 100000, 100000)
-	
+
 	-- Calculate velocity (horizontal + vertical)
 	local horizontalDir = Vector3.new(direction.X, 0, direction.Z).Unit
 	local velocity = (horizontalDir * horizontalForce) + Vector3.new(0, verticalForce, 0)
-	
+
 	bodyVelocity.Velocity = velocity
 	bodyVelocity.Parent = targetRoot
 
@@ -198,54 +198,54 @@ end
 
 function CombatUtilities.CreateRateLimiter(maxPerSecond: number)
 	local tracker = {}
-	
+
 	return {
 		Check = function(userId: number): boolean
 			local currentTime = tick()
-			
+
 			if not tracker[userId] then
 				tracker[userId] = { count = 1, lastReset = currentTime }
 				return true
 			end
-			
+
 			local data = tracker[userId]
-			
+
 			-- Reset if 1 second has passed
 			if currentTime - data.lastReset >= 1 then
 				data.count = 1
 				data.lastReset = currentTime
 				return true
 			end
-			
+
 			-- Check limit
 			if data.count >= maxPerSecond then
 				return false
 			end
-			
+
 			data.count += 1
 			return true
-		end
+		end,
 	}
 end
 
 function CombatUtilities.CreateCooldownTracker()
 	local cooldowns = {}
-	
+
 	return {
 		IsOnCooldown = function(key: string, duration: number): boolean
 			local currentTime = tick()
-			
+
 			if cooldowns[key] and currentTime < cooldowns[key] then
 				return true
 			end
-			
+
 			cooldowns[key] = currentTime + duration
 			return false
 		end,
-		
+
 		Reset = function(key: string)
 			cooldowns[key] = nil
-		end
+		end,
 	}
 end
 
