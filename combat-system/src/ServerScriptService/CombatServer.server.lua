@@ -282,17 +282,17 @@ M1Event.OnServerEvent:Connect(function(player: Player, cameraLookVector: Vector3
 	local animKey = "M" .. combo
 	local animData = CombatSettings.Animations[animKey]
 	local animDuration = animData and animData.Duration or 0.5
-	local hitFrame = animData and animData.HitFrame or 0.2
+	local hitFrame = animData and animData.HitFrame or 0.15 -- Earlier hit frame (was 0.2)
 
 	-- Send animation to client
 	M1Event:FireClient(player, combo, isHeavy, isFinisher)
 
-	-- Schedule hit detection
+	-- Schedule hit detection (EARLIER for snappier feel)
 	task.delay(animDuration * hitFrame, function()
 		-- Calculate hitbox parameters
 		local range = CombatSettings.M1.HitboxRange
 		local angle = CombatSettings.M1.HitboxAngle
-		
+
 		-- Dash attacks have bigger range and hit 360
 		if data.IsDashing and CombatSettings.Dash.AllowAttackDuringDash then
 			range *= CombatSettings.Dash.DashAttackRangeMultiplier
