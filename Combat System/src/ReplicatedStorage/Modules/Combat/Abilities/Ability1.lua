@@ -11,7 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
 
-local AbilityBase = require(ReplicatedStorage.Modules.Combat.Abilities.AbilityBase)
+local AbilityBase = require(ReplicatedStorage.Modules.Combat.Abilities.BaseAbility)
 
 -- ========================================
 -- ABILITY CONFIGURATION
