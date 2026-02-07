@@ -1,10 +1,10 @@
 --[[
 	CombatClient.lua
 	
-	Professional client-side combat system inspired by TSB.
-	Features: Sprint, M1 combos, heavy attacks, damage numbers, VFX.
+	TSB-inspired client combat with camera-based attacks.
+	Features: Multi-target hits, dash combat, spin attacks, instant VFX.
 	
-	Author: [Your Name]
+	Author: Combat System Rewrite
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -18,12 +18,14 @@ local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
+local camera = workspace.CurrentCamera
 
 local SETTINGS = require(ReplicatedStorage.Modules.Combat:WaitForChild("CombatSettings"))
 local RemoteFolder = ReplicatedStorage:WaitForChild("CombatRemotes")
 local M1Event = RemoteFolder:WaitForChild("M1Attack")
 local BlockEvent = RemoteFolder:WaitForChild("Block")
 local HitEvent = RemoteFolder:WaitForChild("Hit")
+local DashEvent = RemoteFolder:WaitForChild("Dash")
 
 local CombatVFX = ReplicatedStorage.Assets.CombatSystem:WaitForChild("CombatVfx")
 local ConstantArmAura = CombatVFX:WaitForChild("ConstantArmAura")
@@ -45,6 +47,7 @@ local state = {
 	lastAttack = 0,
 
 	activeAura = nil,
+	activeDashBodyVelocity = nil,
 }
 
 local animations = {}
@@ -58,7 +61,6 @@ local function CreateDamageNumber(position: Vector3, damage: number, color: Colo
 	local billboardGui = Instance.new("BillboardGui")
 	billboardGui.Size = UDim2.new(0, 100, 0, 50)
 	billboardGui.StudsOffset = Vector3.new(math.random(-2, 2), 3, 0)
-
 	billboardGui.AlwaysOnTop = true
 	billboardGui.Parent = workspace.CurrentCamera
 
@@ -73,10 +75,9 @@ local function CreateDamageNumber(position: Vector3, damage: number, color: Colo
 	textLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
 	textLabel.Parent = billboardGui
 
-	-- Position in world
 	local attachment = Instance.new("Attachment")
 	attachment.WorldPosition = position
-	attachment.Parent = workspace.Terrain -- lightweight, perfect for world-space UI
+	attachment.Parent = workspace.Terrain
 
 	billboardGui.Adornee = attachment
 	billboardGui.Parent = workspace
@@ -119,7 +120,6 @@ function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinishe
 	local hitVfx = TargetHitVfx:Clone()
 	hitVfx.Parent = workspace
 
-	-- R6 chest-level offset
 	local offset = CFrame.new(0, 1, -0.6)
 
 	if hitVfx:IsA("Model") then
@@ -128,7 +128,6 @@ function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinishe
 		hitVfx.CFrame = hrp.CFrame * offset
 	end
 
-	-- Emit particles
 	for _, v in hitVfx:GetDescendants() do
 		if v:IsA("ParticleEmitter") then
 			local count = v:GetAttribute("EmitCount") or 30
@@ -152,7 +151,6 @@ function VFXController.PlayBlockVFX(targetRoot: BasePart, isPerfect: boolean)
 		blockEffect.CFrame = targetRoot.CFrame
 	end
 
-	-- Emit particles
 	for _, desc in blockEffect:GetDescendants() do
 		if desc:IsA("ParticleEmitter") then
 			local count = desc:GetAttribute("EmitCount") or 20
@@ -185,7 +183,6 @@ function VFXController.EnableArmAura()
 		leftAura.Parent = leftArm
 		table.insert(state.activeAura, leftAura)
 
-		-- Enable particles
 		for _, aura in state.activeAura do
 			for _, desc in aura:GetDescendants() do
 				if desc:IsA("ParticleEmitter") then
@@ -202,7 +199,6 @@ function VFXController.DisableArmAura()
 	end
 
 	for _, aura in state.activeAura do
-		-- Disable particles
 		for _, desc in aura:GetDescendants() do
 			if desc:IsA("ParticleEmitter") then
 				desc.Enabled = false
@@ -221,7 +217,6 @@ function VFXController.ScreenShake(shakeType: string)
 		return
 	end
 
-	local camera = workspace.CurrentCamera
 	local magnitude = shakeData.Magnitude
 	local duration = shakeData.Duration
 
@@ -256,17 +251,14 @@ local function LoadAnimations()
 		return animator:LoadAnimation(anim)
 	end
 
-	-- Movement
 	animations.Walk = load(SETTINGS.Animations.Walk)
 	animations.Sprint = load(SETTINGS.Animations.Sprint)
 
-	-- Dashing
 	animations.FrontDash = load(SETTINGS.Animations.FrontDash)
 	animations.BackDash = load(SETTINGS.Animations.BackDash)
 	animations.SideDashLeft = load(SETTINGS.Animations.SideDashLeft)
 	animations.SideDashRight = load(SETTINGS.Animations.SideDashRight)
 
-	-- M1 Combo
 	animations.M1 = load(SETTINGS.Animations.M1.Id)
 	animations.M2 = load(SETTINGS.Animations.M2.Id)
 	animations.M3 = load(SETTINGS.Animations.M3.Id)
@@ -286,7 +278,6 @@ local function UpdateMovement()
 	local velocity = rootPart.Velocity
 	local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
 
-	-- Don't play movement anims while dashing or attacking
 	if state.isDashing or state.isAttacking or state.isBlocking then
 		if currentMoveAnim then
 			currentMoveAnim:Stop()
@@ -295,7 +286,6 @@ local function UpdateMovement()
 		return
 	end
 
-	-- Determine which animation to play
 	if horizontalSpeed > 2 then
 		local targetAnim = isSprinting and animations.Sprint or animations.Walk
 
@@ -345,13 +335,13 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 end)
 
 -- ========================================
--- DASH SYSTEM
+-- IMPROVED DASH SYSTEM (TSB-Style)
 -- ========================================
 
 local keysPressed = { W = false, A = false, S = false, D = false }
 
 local function PerformDash(direction: string)
-	if state.isDashing or state.isAttacking then
+	if state.isDashing or state.isBlocking then
 		return
 	end
 
@@ -362,6 +352,9 @@ local function PerformDash(direction: string)
 
 	state.isDashing = true
 	state.lastDash = currentTime
+
+	-- Notify server
+	DashEvent:FireServer(true)
 
 	-- Stop movement animation
 	if currentMoveAnim then
@@ -374,30 +367,43 @@ local function PerformDash(direction: string)
 		dashAnim:Play()
 	end
 
-	-- Calculate direction
+	-- Calculate direction (CAMERA-RELATIVE)
+	local cameraCF = camera.CFrame
 	local dashDir = Vector3.zero
+
 	if direction == "Front" then
-		dashDir = rootPart.CFrame.LookVector
+		dashDir = Vector3.new(cameraCF.LookVector.X, 0, cameraCF.LookVector.Z).Unit
 	elseif direction == "Back" then
-		dashDir = -rootPart.CFrame.LookVector
+		dashDir = -Vector3.new(cameraCF.LookVector.X, 0, cameraCF.LookVector.Z).Unit
 	elseif direction == "SideLeft" then
-		dashDir = -rootPart.CFrame.RightVector
+		dashDir = -Vector3.new(cameraCF.RightVector.X, 0, cameraCF.RightVector.Z).Unit
 	elseif direction == "SideRight" then
-		dashDir = rootPart.CFrame.RightVector
+		dashDir = Vector3.new(cameraCF.RightVector.X, 0, cameraCF.RightVector.Z).Unit
+	end
+
+	-- Remove old dash velocity
+	if state.activeDashBodyVelocity then
+		state.activeDashBodyVelocity:Destroy()
 	end
 
 	-- Apply dash velocity
 	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.Name = "DashVelocity"
 	bodyVelocity.MaxForce = Vector3.new(100000, 0, 100000)
 	bodyVelocity.Velocity = dashDir * SETTINGS.Dash.Speed
 	bodyVelocity.Parent = rootPart
+	state.activeDashBodyVelocity = bodyVelocity
 
+	-- End dash
 	task.delay(SETTINGS.Dash.Duration, function()
 		if bodyVelocity.Parent then
 			bodyVelocity:Destroy()
 		end
-		rootPart.AssemblyLinearVelocity = Vector3.zero
+		state.activeDashBodyVelocity = nil
 		state.isDashing = false
+
+		-- Notify server
+		DashEvent:FireServer(false)
 
 		if dashAnim then
 			dashAnim:Stop()
@@ -421,7 +427,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		keysPressed.D = true
 	end
 
-	-- Dash (Q key)
+	-- Dash
 	if input.KeyCode == SETTINGS.Dash.Key then
 		if keysPressed.S then
 			PerformDash("Back")
@@ -464,12 +470,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 			humanoid.WalkSpeed = SETTINGS.Player.BlockSpeed
 			BlockEvent:FireServer(true)
 
-			-- Show block VFX
 			activeBlockVFX = BlockVfx:Clone()
 			activeBlockVFX.Name = "ActiveBlock"
 			activeBlockVFX.Parent = rootPart
 
-			-- Enable block particles
 			for _, desc in activeBlockVFX:GetDescendants() do
 				if desc:IsA("ParticleEmitter") then
 					desc.Enabled = true
@@ -486,7 +490,6 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 			humanoid.WalkSpeed = isSprinting and SETTINGS.Player.SprintSpeed or SETTINGS.Player.WalkSpeed
 			BlockEvent:FireServer(false)
 
-			-- Remove block VFX
 			if activeBlockVFX then
 				activeBlockVFX:Destroy()
 				activeBlockVFX = nil
@@ -496,7 +499,7 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 end)
 
 -- ========================================
--- M1 ATTACK SYSTEM
+-- M1 ATTACK SYSTEM (Camera-Based)
 -- ========================================
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -505,7 +508,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		if state.isAttacking or state.isDashing or state.isBlocking then
+		-- Allow attacking during dash (TSB-style)
+		if state.isBlocking then
+			return
+		end
+		
+		if state.isAttacking and not SETTINGS.Dash.AllowAttackDuringDash then
 			return
 		end
 
@@ -515,7 +523,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		end
 
 		state.lastAttack = currentTime
-		M1Event:FireServer()
+
+		-- Send camera direction to server for camera-based hitbox
+		local cameraLookVector = nil
+		if SETTINGS.M1.UseCameraDirection then
+			cameraLookVector = camera.CFrame.LookVector
+		end
+
+		M1Event:FireServer(cameraLookVector)
 	end
 end)
 
@@ -528,32 +543,27 @@ M1Event.OnClientEvent:Connect(function(combo: number, isHeavy: boolean, isFinish
 	state.isAttacking = true
 	state.currentCombo = combo
 
-	-- Play animation
 	local animKey = "M" .. combo
 	local anim = animations[animKey]
 	if anim then
 		anim:Play()
 	end
 
-	-- Get duration
 	local animData = SETTINGS.Animations[animKey]
 	local duration = animData and animData.Duration or 0.5
 
-	-- Enable arm aura during attack
 	VFXController.EnableArmAura()
 
-	-- End attack
 	task.delay(duration, function()
 		state.isAttacking = false
 
-		-- Disable aura if not sprinting
 		if not isSprinting then
 			VFXController.DisableArmAura()
 		end
 	end)
 end)
 
--- Handle hit feedback
+-- INSTANT HIT FEEDBACK (plays immediately when damage applies)
 HitEvent.OnClientEvent:Connect(
 	function(
 		targetChar: Model,
@@ -569,7 +579,7 @@ HitEvent.OnClientEvent:Connect(
 			return
 		end
 
-		-- Determine damage number color
+		-- Determine damage color
 		local color = SETTINGS.VFX.DamageNumbers.NormalColor
 		if wasPerfectBlock then
 			color = SETTINGS.VFX.DamageNumbers.CriticalColor
@@ -581,12 +591,11 @@ HitEvent.OnClientEvent:Connect(
 			color = SETTINGS.VFX.DamageNumbers.HeavyColor
 		end
 
-		-- Play sound based on combo number
+		-- INSTANT SOUND (plays at target location when hit applies)
 		local soundId
 		if wasBlocked then
 			soundId = SETTINGS.Audio.BlockHit
 		else
-			-- Play the specific M1 sound for this combo hit
 			if combo == 1 then
 				soundId = SETTINGS.Audio.M1Sound
 			elseif combo == 2 then
@@ -610,14 +619,14 @@ HitEvent.OnClientEvent:Connect(
 		-- Create damage number
 		CreateDamageNumber(targetRoot.Position, damage, color, isFinisher or wasPerfectBlock)
 
-		-- Play VFX
+		-- INSTANT VFX (plays when hit applies)
 		if wasBlocked then
 			VFXController.PlayBlockVFX(targetRoot, wasPerfectBlock)
 		else
 			VFXController.PlayHitVFX(targetChar, isHeavy, isFinisher)
 		end
 
-		-- Screen shake (only if it's our character getting hit)
+		-- Screen shake (only if WE got hit)
 		if targetChar == character then
 			if wasBlocked then
 				VFXController.ScreenShake("Blocked")
@@ -635,7 +644,6 @@ HitEvent.OnClientEvent:Connect(
 -- Block feedback
 BlockEvent.OnClientEvent:Connect(function(eventType: string, isPerfect: boolean)
 	if eventType == "blocked" then
-		-- Flash effect
 		local flash = Instance.new("Part")
 		flash.Size = Vector3.new(4, 4, 0.1)
 		flash.Transparency = 0.5
@@ -668,6 +676,11 @@ character.Humanoid.Died:Connect(function()
 		activeBlockVFX:Destroy()
 		activeBlockVFX = nil
 	end
+
+	if state.activeDashBodyVelocity then
+		state.activeDashBodyVelocity:Destroy()
+		state.activeDashBodyVelocity = nil
+	end
 end)
 
-print("✅ CombatClient initialized (TSB-style)")
+print("✅ CombatClient initialized (TSB Multi-Target + Camera)")
