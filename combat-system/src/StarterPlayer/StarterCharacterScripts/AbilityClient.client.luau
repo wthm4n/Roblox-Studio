@@ -20,7 +20,7 @@ local rootPart = character:WaitForChild("HumanoidRootPart")
 
 -- Folders
 local AbilitiesFolder = ReplicatedStorage.Modules.Combat:WaitForChild("Abilities")
-local AbilityVFXFolder = ReplicatedStorage.Assets.Combat:WaitForChild("AbilityVFX")
+local AbilityVFXFolder = ReplicatedStorage.Assets.CombatSystem:WaitForChild("AbilityVFX")
 local AbilityRemotes = ReplicatedStorage:WaitForChild("AbilityRemotes")
 
 -- Remotes
