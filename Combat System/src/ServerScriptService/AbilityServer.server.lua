@@ -209,17 +209,20 @@ UseAbilityEvent.OnServerEvent:Connect(function(player: Player, abilityIndex: num
 	-- Create utility functions for this ability activation
 	local utilities = CreateAbilityUtilities(player, character)
 
-	-- Execute ability
+	-- Execute ability - FIX: Handle pcall return values correctly
 	local success, targets = false, {}
 
-	local executeSuccess, executeResult = pcall(function()
+	local executeSuccess, result1, result2 = pcall(function()
 		return ability:OnActivate(player, character, rootPart, utilities)
 	end)
 
 	if executeSuccess then
-		success, targets = executeResult[1], executeResult[2]
+		-- pcall succeeded, result1 and result2 are the actual return values
+		success = result1
+		targets = result2 or {}
 	else
-		warn("Error executing ability:", ability.Name, executeResult)
+		-- pcall failed, result1 contains the error message
+		warn("Error executing ability:", ability.Name, result1)
 	end
 
 	-- Send result to client

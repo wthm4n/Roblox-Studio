@@ -41,45 +41,27 @@ local function LoadAnimations()
 		animator.Parent = humanoid
 	end
 
-	local anim1 = Instance.new("Animation")
-	anim1.AnimationId = SETTINGS.ANIM_M1
-	animations.M1 = animator:LoadAnimation(anim1)
+	local Anim = SETTINGS.Animations
 
-	local anim2 = Instance.new("Animation")
-	anim2.AnimationId = SETTINGS.ANIM_M2
-	animations.M2 = animator:LoadAnimation(anim2)
+	local function load(id)
+		local a = Instance.new("Animation")
+		a.AnimationId = id
+		return animator:LoadAnimation(a)
+	end
 
-	local anim3 = Instance.new("Animation")
-	anim3.AnimationId = SETTINGS.ANIM_M3
-	animations.M3 = animator:LoadAnimation(anim3)
+	-- ✅ FIX: Use new structure
+	animations.M1 = load(Anim.M1.Id)
+	animations.M2 = load(Anim.M2.Id)
+	animations.M3 = load(Anim.M3.Id)
+	animations.M4 = load(Anim.M4.Id)
 
-	local anim4 = Instance.new("Animation")
-	anim4.AnimationId = SETTINGS.ANIM_M4
-	animations.M4 = animator:LoadAnimation(anim4)
+	animations.FrontDash = load(Anim.FrontDash)
+	animations.BackDash = load(Anim.BackDash)
+	animations.SideDashLeft = load(Anim.SideDashLeft)
+	animations.SideDashRight = load(Anim.SideDashRight)
 
-	local frontDash = Instance.new("Animation")
-	frontDash.AnimationId = SETTINGS.ANIM_FRONTDASH
-	animations.FrontDash = animator:LoadAnimation(frontDash)
-
-	local run = Instance.new("Animation")
-	run.AnimationId = SETTINGS.ANIM_RUN
-	animations.Run = animator:LoadAnimation(run)
-
-	local sideDashLeft = Instance.new("Animation")
-	sideDashLeft.AnimationId = SETTINGS.ANIM_SIDEDASHLEFT
-	animations.SideDashLeft = animator:LoadAnimation(sideDashLeft)
-
-	local sideDashRight = Instance.new("Animation")
-	sideDashRight.AnimationId = SETTINGS.ANIM_SIDEDASHRIGHT
-	animations.SideDashRight = animator:LoadAnimation(sideDashRight)
-
-	local walk = Instance.new("Animation")
-	walk.AnimationId = SETTINGS.ANIM_WALK
-	animations.Walk = animator:LoadAnimation(walk)
-
-	local backDash = Instance.new("Animation")
-	backDash.AnimationId = SETTINGS.ANIM_BACKDASH
-	animations.BackDash = animator:LoadAnimation(backDash)
+	animations.Run = load(Anim.Run)
+	animations.Walk = load(Anim.Walk)
 end
 
 LoadAnimations()
@@ -90,9 +72,9 @@ local runSpeedFixed = false
 
 RunService.RenderStepped:Connect(function()
 	if not isDashing and not runSpeedFixed then
-		if humanoid.WalkSpeed ~= SETTINGS.NORMAL_MOVE_SPEED and not isBlocking then
-			humanoid.WalkSpeed = SETTINGS.NORMAL_MOVE_SPEED
-			runSpeedFixed = true
+		-- ✅ FIX: Use SETTINGS.Player.NormalMoveSpeed
+		if humanoid.WalkSpeed ~= SETTINGS.Player.NormalMoveSpeed and not isBlocking then
+			humanoid.WalkSpeed = SETTINGS.Player.NormalMoveSpeed
 		end
 	end
 
@@ -156,11 +138,15 @@ local comboLabel = CreateComboUI()
 
 local punchAura = nil
 local function CreatePunchAura()
-	if PunchVFX:FindFirstChild("constant punch vfx") then
-		punchAura = PunchVFX["constant punch vfx"]:Clone()
+	if CombatVFX:FindFirstChild("Constant VFX") then
+		punchAura = PunchVFX["Constant VFX"]:Clone()
 		local rightArm = character:FindFirstChild("Right Arm")
-		if rightArm then
-			punchAura.Parent = rightArm
+		local leftArm = character:FindFirstChild("Left Arm")
+		if rightArm and leftArm then
+			local rightAura = punchAura:Clone()
+			rightAura.Parent = rightArm
+			local leftAura = punchAura:Clone()
+			leftAura.Parent = leftArm
 		end
 	end
 end
@@ -173,7 +159,8 @@ local function PerformDash(direction)
 	end
 
 	local currentTime = tick()
-	if currentTime - lastDash < SETTINGS.DASH_COOLDOWN then
+	-- ✅ FIX: Use SETTINGS.Dash.Cooldown
+	if currentTime - lastDash < SETTINGS.Dash.Cooldown then
 		return
 	end
 
@@ -214,10 +201,12 @@ local function PerformDash(direction)
 
 	local bodyVelocity = Instance.new("BodyVelocity")
 	bodyVelocity.MaxForce = Vector3.new(100000, 0, 100000)
-	bodyVelocity.Velocity = dashDirection * SETTINGS.DASH_SPEED
+	-- ✅ FIX: Use SETTINGS.Dash.Speed
+	bodyVelocity.Velocity = dashDirection * SETTINGS.Dash.Speed
 	bodyVelocity.Parent = rootPart
 
-	task.delay(SETTINGS.DASH_DURATION, function()
+	-- ✅ FIX: Use SETTINGS.Dash.Duration
+	task.delay(SETTINGS.Dash.Duration, function()
 		if bodyVelocity.Parent then
 			bodyVelocity:Destroy()
 		end
@@ -230,7 +219,8 @@ local function PerformDash(direction)
 		end
 
 		if not isBlocking then
-			humanoid.WalkSpeed = SETTINGS.NORMAL_MOVE_SPEED
+			-- ✅ FIX: Use SETTINGS.Player.NormalMoveSpeed
+			humanoid.WalkSpeed = SETTINGS.Player.NormalMoveSpeed
 			runSpeedFixed = true
 		end
 	end)
@@ -244,17 +234,18 @@ local function GetHitFrame(combo)
 		[4] = 0.5,
 	}
 
+	-- ✅ FIX: Use SETTINGS.Animations.M1-M4.Duration
 	local animDuration
 	if combo == 1 then
-		animDuration = SETTINGS.ANIM_DURATION_M1
+		animDuration = SETTINGS.Animations.M1.Duration
 	elseif combo == 2 then
-		animDuration = SETTINGS.ANIM_DURATION_M2
+		animDuration = SETTINGS.Animations.M2.Duration
 	elseif combo == 3 then
-		animDuration = SETTINGS.ANIM_DURATION_M3
+		animDuration = SETTINGS.Animations.M3.Duration
 	elseif combo == 4 then
-		animDuration = SETTINGS.ANIM_DURATION_M4
+		animDuration = SETTINGS.Animations.M4.Duration
 	else
-		animDuration = SETTINGS.ANIM_DURATION_M1
+		animDuration = SETTINGS.Animations.M1.Duration
 	end
 
 	local hitFrame = hitFrames[combo] or 0.4
@@ -269,13 +260,14 @@ local function PlayAttackAnimation(combo)
 	isAttacking = true
 	canRequestAttack = true
 
+	-- ✅ FIX: Use SETTINGS.Animations.M1-M4.Id for comparison
 	for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
 		local animId = track.Animation.AnimationId
 		if
-			animId == SETTINGS.ANIM_M1
-			or animId == SETTINGS.ANIM_M2
-			or animId == SETTINGS.ANIM_M3
-			or animId == SETTINGS.ANIM_M4
+			animId == SETTINGS.Animations.M1.Id
+			or animId == SETTINGS.Animations.M2.Id
+			or animId == SETTINGS.Animations.M3.Id
+			or animId == SETTINGS.Animations.M4.Id
 		then
 			track:Stop(0)
 		end
@@ -289,21 +281,22 @@ local function PlayAttackAnimation(combo)
 	local anim
 	local animDuration
 
+	-- ✅ FIX: Use SETTINGS.Animations.M1-M4.Duration
 	if combo == 1 then
 		anim = animations.M1
-		animDuration = SETTINGS.ANIM_DURATION_M1
+		animDuration = SETTINGS.Animations.M1.Duration
 	elseif combo == 2 then
 		anim = animations.M2
-		animDuration = SETTINGS.ANIM_DURATION_M2
+		animDuration = SETTINGS.Animations.M2.Duration
 	elseif combo == 3 then
 		anim = animations.M3
-		animDuration = SETTINGS.ANIM_DURATION_M3
+		animDuration = SETTINGS.Animations.M3.Duration
 	elseif combo == 4 then
 		anim = animations.M4
-		animDuration = SETTINGS.ANIM_DURATION_M4
+		animDuration = SETTINGS.Animations.M4.Duration
 	else
 		anim = animations.M1
-		animDuration = SETTINGS.ANIM_DURATION_M1
+		animDuration = SETTINGS.Animations.M1.Duration
 	end
 
 	if anim then
@@ -448,7 +441,8 @@ local function UpdateCombo(combo)
 			task.cancel(comboResetTimer)
 		end
 
-		comboResetTimer = task.delay(SETTINGS.COMBO_RESET_TIME, function()
+		-- ✅ FIX: Use SETTINGS.M1.ComboResetTime
+		comboResetTimer = task.delay(SETTINGS.M1.ComboResetTime, function()
 			currentCombo = 0
 			comboLabel.Visible = false
 		end)
@@ -496,7 +490,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	elseif input.KeyCode == Enum.KeyCode.F then
 		if not isAttacking and not isDashing and not isBlocking then
 			isBlocking = true
-			humanoid.WalkSpeed = SETTINGS.BLOCK_MOVE_SPEED
+			-- ✅ FIX: Use SETTINGS.Player.BlockMoveSpeed
+			humanoid.WalkSpeed = SETTINGS.Player.BlockMoveSpeed
 			BlockEvent:FireServer(true)
 
 			if BlockVFX then
@@ -519,7 +514,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		end
 
 		local timeSinceLastAttack = currentTime - lastAttackTime
-		local minimumDelay = SETTINGS.MINIMUM_ATTACK_DELAY
+		-- ✅ FIX: Use SETTINGS.M1.MinimumAttackDelay
+		local minimumDelay = SETTINGS.M1.MinimumAttackDelay
 
 		if timeSinceLastAttack < minimumDelay then
 			return
@@ -543,7 +539,8 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 	elseif input.KeyCode == Enum.KeyCode.F then
 		if isBlocking then
 			isBlocking = false
-			humanoid.WalkSpeed = SETTINGS.NORMAL_MOVE_SPEED
+			-- ✅ FIX: Use SETTINGS.Player.NormalMoveSpeed
+			humanoid.WalkSpeed = SETTINGS.Player.NormalMoveSpeed
 			BlockEvent:FireServer(false)
 
 			local activeBlock = rootPart:FindFirstChild("ActiveBlock")
@@ -555,7 +552,8 @@ UserInputService.InputEnded:Connect(function(input, gameProcessed)
 end)
 
 M1Event.OnClientEvent:Connect(function(serverCombo)
-	local nextCombo = (currentCombo % SETTINGS.COMBO_MAX) + 1
+	-- ✅ FIX: Use SETTINGS.M1.MaxComboCount
+	local nextCombo = (currentCombo % SETTINGS.M1.MaxComboCount) + 1
 
 	UpdateCombo(nextCombo)
 

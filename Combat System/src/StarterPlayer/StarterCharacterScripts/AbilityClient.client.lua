@@ -195,6 +195,7 @@ local function LoadAbilities()
 						slot.AbilityName.Text = abilityModule.Name
 					end
 
+					-- FIX: Initialize cooldown to 0
 					cooldowns[abilityNum] = 0
 
 					print("✅ Loaded ability:", abilityModule.Name)
@@ -221,7 +222,8 @@ local function UpdateCooldownUI(abilityIndex: number, timeLeft: number)
 	local overlay = slot.CooldownOverlay
 	local text = overlay.CooldownText
 
-	if timeLeft > 0 then
+	-- FIX: Check if timeLeft is valid before comparing
+	if timeLeft and timeLeft > 0 then
 		overlay.Visible = true
 		text.Text = string.format("%.1f", timeLeft)
 	else
@@ -245,7 +247,7 @@ local function StartCooldown(abilityIndex: number, duration: number)
 
 	-- Countdown
 	task.spawn(function()
-		while cooldowns[abilityIndex] > 0 do
+		while cooldowns[abilityIndex] and cooldowns[abilityIndex] > 0 do
 			task.wait(0.1)
 			cooldowns[abilityIndex] = math.max(0, cooldowns[abilityIndex] - 0.1)
 			UpdateCooldownUI(abilityIndex, cooldowns[abilityIndex])
@@ -261,7 +263,7 @@ local function IsAbilityReady(abilityIndex: number): boolean
 	if not abilities[abilityIndex] then
 		return false
 	end
-	if cooldowns[abilityIndex] > 0 then
+	if not cooldowns[abilityIndex] or cooldowns[abilityIndex] > 0 then
 		return false
 	end
 	if isUsingAbility then
@@ -348,7 +350,9 @@ end)
 task.spawn(function()
 	while true do
 		for i = 1, 4 do
-			UpdateCooldownUI(i, cooldowns[i])
+			if cooldowns[i] then
+				UpdateCooldownUI(i, cooldowns[i])
+			end
 		end
 		task.wait(0.1)
 	end
