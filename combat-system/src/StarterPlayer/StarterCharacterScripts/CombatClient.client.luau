@@ -1,3 +1,12 @@
+--[[
+	CombatClient.lua
+	
+	Professional client-side combat system inspired by TSB.
+	Features: Sprint, M1 combos, heavy attacks, damage numbers, VFX.
+	
+	Author: [Your Name]
+]]
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
@@ -14,25 +23,210 @@ local SETTINGS = require(ReplicatedStorage.Modules.Combat:WaitForChild("CombatSe
 local RemoteFolder = ReplicatedStorage:WaitForChild("CombatRemotes")
 local M1Event = RemoteFolder:WaitForChild("M1Attack")
 local BlockEvent = RemoteFolder:WaitForChild("Block")
-local DamageEvent = RemoteFolder:WaitForChild("DamageRequest")
+local HitEvent = RemoteFolder:WaitForChild("Hit")
 
-local CombatVFX = ReplicatedStorage.Assets.Combat:WaitForChild("CombatVFX")
-local PunchVFX = CombatVFX:WaitForChild("Punch vfx")
-local BlockVFX = CombatVFX:WaitForChild("block vfx")
+local CombatVFX = ReplicatedStorage.Assets:WaitForChild("CombatSystem")
+local ConstantArmAura = CombatVFX:WaitForChild("ConstantArmAura")
+local TargetHitVfx = CombatVFX:WaitForChild("TargetHitVfx")
+local BlockVfx = CombatVFX:WaitForChild("BlockVfx")
 
-local isAttacking = false
-local isDashing = false
-local isBlocking = false
-local currentCombo = 0
-local lastDash = 0
-local lastAttackTime = 0
-local attackEndTime = 0
-local comboResetTimer = nil
-local canRequestAttack = true
+-- ========================================
+-- STATE
+-- ========================================
+
+local state = {
+	isAttacking = false,
+	isDashing = false,
+	isBlocking = false,
+	isSprinting = false,
+	
+	currentCombo = 0,
+	lastDash = 0,
+	lastAttack = 0,
+	
+	activeAura = nil,
+}
 
 local animations = {}
-local currentAttackTrack = nil
 local animator = nil
+
+-- ========================================
+-- DAMAGE NUMBERS
+-- ========================================
+
+local function CreateDamageNumber(position: Vector3, damage: number, color: Color3, isSpecial: boolean)
+	local billboardGui = Instance.new("BillboardGui")
+	billboardGui.Size = UDim2.new(0, 100, 0, 50)
+	billboardGui.StudsOffset = Vector3.new(math.random(-2, 2), 3, 0)
+	billboardGui.Adornee = nil
+	billboardGui.AlwaysOnTop = true
+	billboardGui.Parent = workspace.CurrentCamera
+	
+	local textLabel = Instance.new("TextLabel")
+	textLabel.Size = UDim2.new(1, 0, 1, 0)
+	textLabel.BackgroundTransparency = 1
+	textLabel.Text = tostring(math.floor(damage))
+	textLabel.Font = Enum.Font.GothamBold
+	textLabel.TextSize = isSpecial and 32 or SETTINGS.VFX.DamageNumbers.Size
+	textLabel.TextColor3 = color
+	textLabel.TextStrokeTransparency = 0.5
+	textLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+	textLabel.Parent = billboardGui
+	
+	-- Position in world
+	billboardGui.CFrame = CFrame.new(position)
+	
+	-- Animate
+	local riseSpeed = SETTINGS.VFX.DamageNumbers.RiseSpeed
+	local duration = SETTINGS.VFX.DamageNumbers.Duration
+	
+	task.spawn(function()
+		local startTime = tick()
+		local startPos = position
+		
+		while tick() - startTime < duration do
+			local alpha = (tick() - startTime) / duration
+			local newPos = startPos + Vector3.new(0, riseSpeed * alpha, 0)
+			billboardGui.CFrame = CFrame.new(newPos)
+			textLabel.TextTransparency = alpha
+			textLabel.TextStrokeTransparency = 0.5 + (alpha * 0.5)
+			
+			task.wait()
+		end
+		
+		billboardGui:Destroy()
+	end)
+end
+
+-- ========================================
+-- VFX SYSTEM
+-- ========================================
+
+local VFXController = {}
+
+function VFXController.PlayHitVFX(targetChar: Model, isHeavy: boolean, isFinisher: boolean)
+	local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then return end
+	
+	-- Clone and play hit VFX
+	local hitVfx = TargetHitVfx:Clone()
+	hitVfx.Parent = targetRoot
+	
+	if hitVfx:IsA("Model") then
+		hitVfx:PivotTo(targetRoot.CFrame)
+	else
+		hitVfx.CFrame = targetRoot.CFrame
+	end
+	
+	-- Emit particles
+	for _, desc in hitVfx:GetDescendants() do
+		if desc:IsA("ParticleEmitter") then
+			local count = desc:GetAttribute("EmitCount") or 30
+			if isFinisher then count = count * 2 end
+			desc:Emit(count)
+		elseif desc:IsA("Beam") then
+			desc.Enabled = true
+			task.delay(0.3, function()
+				if desc then desc.Enabled = false end
+			end)
+		end
+	end
+	
+	Debris:AddItem(hitVfx, 2)
+end
+
+function VFXController.PlayBlockVFX(targetRoot: BasePart, isPerfect: boolean)
+	local blockEffect = BlockVfx:Clone()
+	blockEffect.Parent = targetRoot
+	
+	if blockEffect:IsA("Model") then
+		blockEffect:PivotTo(targetRoot.CFrame)
+	else
+		blockEffect.CFrame = targetRoot.CFrame
+	end
+	
+	-- Emit particles
+	for _, desc in blockEffect:GetDescendants() do
+		if desc:IsA("ParticleEmitter") then
+			local count = desc:GetAttribute("EmitCount") or 20
+			if isPerfect then count = count * 1.5 end
+			desc:Emit(count)
+		end
+	end
+	
+	Debris:AddItem(blockEffect, 1.5)
+end
+
+function VFXController.EnableArmAura()
+	if state.activeAura then return end
+	
+	local rightArm = character:FindFirstChild("Right Arm") or character:FindFirstChild("RightHand")
+	local leftArm = character:FindFirstChild("Left Arm") or character:FindFirstChild("LeftHand")
+	
+	if rightArm and leftArm then
+		state.activeAura = {}
+		
+		local rightAura = ConstantArmAura:Clone()
+		rightAura.Parent = rightArm
+		table.insert(state.activeAura, rightAura)
+		
+		local leftAura = ConstantArmAura:Clone()
+		leftAura.Parent = leftArm
+		table.insert(state.activeAura, leftAura)
+		
+		-- Enable particles
+		for _, aura in state.activeAura do
+			for _, desc in aura:GetDescendants() do
+				if desc:IsA("ParticleEmitter") then
+					desc.Enabled = true
+				end
+			end
+		end
+	end
+end
+
+function VFXController.DisableArmAura()
+	if not state.activeAura then return end
+	
+	for _, aura in state.activeAura do
+		-- Disable particles
+		for _, desc in aura:GetDescendants() do
+			if desc:IsA("ParticleEmitter") then
+				desc.Enabled = false
+			end
+		end
+		
+		Debris:AddItem(aura, 2)
+	end
+	
+	state.activeAura = nil
+end
+
+function VFXController.ScreenShake(shakeType: string)
+	local shakeData = SETTINGS.VFX.ScreenShake[shakeType]
+	if not shakeData then return end
+	
+	local camera = workspace.CurrentCamera
+	local magnitude = shakeData.Magnitude
+	local duration = shakeData.Duration
+	
+	task.spawn(function()
+		local elapsed = 0
+		while elapsed < duration do
+			local shake = Vector3.new(
+				math.random(-100, 100) / 100 * magnitude,
+				math.random(-100, 100) / 100 * magnitude,
+				math.random(-100, 100) / 100 * magnitude
+			)
+			camera.CFrame = camera.CFrame * CFrame.new(shake)
+			elapsed += task.wait()
+		end
+	end)
+end
+
+-- ========================================
+-- ANIMATION SYSTEM
+-- ========================================
 
 local function LoadAnimations()
 	animator = humanoid:FindFirstChildOfClass("Animator")
@@ -40,558 +234,378 @@ local function LoadAnimations()
 		animator = Instance.new("Animator")
 		animator.Parent = humanoid
 	end
-
-	local Anim = SETTINGS.Animations
-
-	local function load(id)
-		local a = Instance.new("Animation")
-		a.AnimationId = id
-		return animator:LoadAnimation(a)
+	
+	local function load(id: string)
+		local anim = Instance.new("Animation")
+		anim.AnimationId = id
+		return animator:LoadAnimation(anim)
 	end
-
-	-- ✅ FIX: Use new structure
-	animations.M1 = load(Anim.M1.Id)
-	animations.M2 = load(Anim.M2.Id)
-	animations.M3 = load(Anim.M3.Id)
-	animations.M4 = load(Anim.M4.Id)
-
-	animations.FrontDash = load(Anim.FrontDash)
-	animations.BackDash = load(Anim.BackDash)
-	animations.SideDashLeft = load(Anim.SideDashLeft)
-	animations.SideDashRight = load(Anim.SideDashRight)
-
-	animations.Run = load(Anim.Run)
-	animations.Walk = load(Anim.Walk)
+	
+	-- Movement
+	animations.Walk = load(SETTINGS.Animations.Walk)
+	animations.Sprint = load(SETTINGS.Animations.Sprint)
+	
+	-- Dashing
+	animations.FrontDash = load(SETTINGS.Animations.FrontDash)
+	animations.BackDash = load(SETTINGS.Animations.BackDash)
+	animations.SideDashLeft = load(SETTINGS.Animations.SideDashLeft)
+	animations.SideDashRight = load(SETTINGS.Animations.SideDashRight)
+	
+	-- M1 Combo
+	animations.M1 = load(SETTINGS.Animations.M1.Id)
+	animations.M2 = load(SETTINGS.Animations.M2.Id)
+	animations.M3 = load(SETTINGS.Animations.M3.Id)
+	animations.M4 = load(SETTINGS.Animations.M4.Id)
 end
 
 LoadAnimations()
 
-local isMoving = false
+-- ========================================
+-- MOVEMENT SYSTEM
+-- ========================================
+
 local currentMoveAnim = nil
-local runSpeedFixed = false
+local isSprinting = false
 
-RunService.RenderStepped:Connect(function()
-	if not isDashing and not runSpeedFixed then
-		-- ✅ FIX: Use SETTINGS.Player.NormalMoveSpeed
-		if humanoid.WalkSpeed ~= SETTINGS.Player.NormalMoveSpeed and not isBlocking then
-			humanoid.WalkSpeed = SETTINGS.Player.NormalMoveSpeed
-		end
-	end
-
-	if isDashing or isAttacking or isBlocking then
+local function UpdateMovement()
+	local velocity = rootPart.Velocity
+	local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+	
+	-- Don't play movement anims while dashing or attacking
+	if state.isDashing or state.isAttacking or state.isBlocking then
 		if currentMoveAnim then
 			currentMoveAnim:Stop()
-			isMoving = false
+			currentMoveAnim = nil
 		end
 		return
 	end
-
-	local velocity = rootPart.Velocity
-	local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
-
+	
+	-- Determine which animation to play
 	if horizontalSpeed > 2 then
-		if not isMoving then
-			isMoving = true
-			if horizontalSpeed > 20 then
-				currentMoveAnim = animations.Run
-			else
-				currentMoveAnim = animations.Walk
-			end
-			if currentMoveAnim then
-				currentMoveAnim:Play()
-			end
-		end
-	else
-		if isMoving then
-			isMoving = false
+		local targetAnim = isSprinting and animations.Sprint or animations.Walk
+		
+		if currentMoveAnim ~= targetAnim then
 			if currentMoveAnim then
 				currentMoveAnim:Stop()
 			end
+			currentMoveAnim = targetAnim
+			currentMoveAnim:Play()
 		end
-	end
-end)
-
-local function CreateComboUI()
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "ComboUI"
-	screenGui.ResetOnSpawn = false
-	screenGui.Parent = player:WaitForChild("PlayerGui")
-
-	local comboLabel = Instance.new("TextLabel")
-	comboLabel.Name = "ComboLabel"
-	comboLabel.Size = UDim2.new(0, 250, 0, 60)
-	comboLabel.Position = UDim2.new(0.5, -125, 0.65, 0)
-	comboLabel.BackgroundTransparency = 1
-	comboLabel.Font = Enum.Font.GothamBold
-	comboLabel.TextSize = 42
-	comboLabel.TextColor3 = Color3.new(1, 1, 1)
-	comboLabel.TextStrokeTransparency = 0.3
-	comboLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
-	comboLabel.Text = ""
-	comboLabel.Visible = false
-	comboLabel.Parent = screenGui
-
-	return comboLabel
-end
-
-local comboLabel = CreateComboUI()
-
-local punchAura = nil
-local function CreatePunchAura()
-	if CombatVFX:FindFirstChild("ConstantVfx") then
-		punchAura = CombatVFX["ConstantVfx"]:Clone()
-		local rightArm = character:FindFirstChild("Right Arm")
-		local leftArm = character:FindFirstChild("Left Arm")
-		if rightArm and rightArm then
-			local leftArmAura = punchAura:Clone()
-			local rightArmAura = punchAura:Clone()
-			leftArmAura.Parent = leftArm
-			rightArmAura.Parent = rightArm
-		end
-	end
-end
-
-CreatePunchAura()
-
-local function PerformDash(direction)
-	if isDashing or isAttacking then
-		return
-	end
-
-	local currentTime = tick()
-	-- ✅ FIX: Use SETTINGS.Dash.Cooldown
-	if currentTime - lastDash < SETTINGS.Dash.Cooldown then
-		return
-	end
-
-	isDashing = true
-	lastDash = currentTime
-	runSpeedFixed = false
-
-	if currentMoveAnim then
-		currentMoveAnim:Stop()
-	end
-
-	local dashAnim
-	if direction == "Forward" then
-		dashAnim = animations.FrontDash
-	elseif direction == "Back" then
-		dashAnim = animations.BackDash
-	elseif direction == "Left" then
-		dashAnim = animations.SideDashLeft
-	elseif direction == "Right" then
-		dashAnim = animations.SideDashRight
-	end
-
-	if dashAnim then
-		dashAnim:Play()
-	end
-
-	local dashDirection = Vector3.new(0, 0, 0)
-
-	if direction == "Forward" then
-		dashDirection = rootPart.CFrame.LookVector
-	elseif direction == "Back" then
-		dashDirection = -rootPart.CFrame.LookVector
-	elseif direction == "Left" then
-		dashDirection = -rootPart.CFrame.RightVector
-	elseif direction == "Right" then
-		dashDirection = rootPart.CFrame.RightVector
-	end
-
-	local bodyVelocity = Instance.new("BodyVelocity")
-	bodyVelocity.MaxForce = Vector3.new(100000, 0, 100000)
-	-- ✅ FIX: Use SETTINGS.Dash.Speed
-	bodyVelocity.Velocity = dashDirection * SETTINGS.Dash.Speed
-	bodyVelocity.Parent = rootPart
-
-	-- ✅ FIX: Use SETTINGS.Dash.Duration
-	task.delay(SETTINGS.Dash.Duration, function()
-		if bodyVelocity.Parent then
-			bodyVelocity:Destroy()
-		end
-
-		rootPart.AssemblyLinearVelocity = Vector3.zero
-
-		isDashing = false
-		if dashAnim then
-			dashAnim:Stop()
-		end
-
-		if not isBlocking then
-			-- ✅ FIX: Use SETTINGS.Player.NormalMoveSpeed
-			humanoid.WalkSpeed = SETTINGS.Player.NormalMoveSpeed
-			runSpeedFixed = true
-		end
-	end)
-end
-
-local function GetHitFrame(combo)
-	local hitFrames = {
-		[1] = 0.4,
-		[2] = 0.4,
-		[3] = 0.45,
-		[4] = 0.5,
-	}
-
-	-- ✅ FIX: Use SETTINGS.Animations.M1-M4.Duration
-	local animDuration
-	if combo == 1 then
-		animDuration = SETTINGS.Animations.M1.Duration
-	elseif combo == 2 then
-		animDuration = SETTINGS.Animations.M2.Duration
-	elseif combo == 3 then
-		animDuration = SETTINGS.Animations.M3.Duration
-	elseif combo == 4 then
-		animDuration = SETTINGS.Animations.M4.Duration
 	else
-		animDuration = SETTINGS.Animations.M1.Duration
-	end
-
-	local hitFrame = hitFrames[combo] or 0.4
-	return animDuration * hitFrame
-end
-
-local function PlayAttackAnimation(combo)
-	if isAttacking then
-		return false
-	end
-
-	isAttacking = true
-	canRequestAttack = true
-
-	-- ✅ FIX: Use SETTINGS.Animations.M1-M4.Id for comparison
-	for _, track in pairs(humanoid:GetPlayingAnimationTracks()) do
-		local animId = track.Animation.AnimationId
-		if
-			animId == SETTINGS.Animations.M1.Id
-			or animId == SETTINGS.Animations.M2.Id
-			or animId == SETTINGS.Animations.M3.Id
-			or animId == SETTINGS.Animations.M4.Id
-		then
-			track:Stop(0)
+		if currentMoveAnim then
+			currentMoveAnim:Stop()
+			currentMoveAnim = nil
 		end
-	end
-
-	if currentAttackTrack then
-		currentAttackTrack:Stop(0)
-		currentAttackTrack = nil
-	end
-
-	local anim
-	local animDuration
-
-	-- ✅ FIX: Use SETTINGS.Animations.M1-M4.Duration
-	if combo == 1 then
-		anim = animations.M1
-		animDuration = SETTINGS.Animations.M1.Duration
-	elseif combo == 2 then
-		anim = animations.M2
-		animDuration = SETTINGS.Animations.M2.Duration
-	elseif combo == 3 then
-		anim = animations.M3
-		animDuration = SETTINGS.Animations.M3.Duration
-	elseif combo == 4 then
-		anim = animations.M4
-		animDuration = SETTINGS.Animations.M4.Duration
-	else
-		anim = animations.M1
-		animDuration = SETTINGS.Animations.M1.Duration
-	end
-
-	if anim then
-		currentAttackTrack = anim
-		anim:Play(0.05, 1, 1)
-	end
-
-	lastAttackTime = tick()
-	attackEndTime = lastAttackTime + animDuration
-
-	local hitFrameTime = GetHitFrame(combo)
-
-	task.delay(hitFrameTime, function()
-		if canRequestAttack then
-			DamageEvent:FireServer(combo)
-			canRequestAttack = false
-		end
-	end)
-
-	task.wait(animDuration)
-
-	isAttacking = false
-	currentAttackTrack = nil
-
-	return true
-end
-
-local function ShowHitEffect(targetCharacter, wasBlocked)
-	local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
-	local targetTorso = targetCharacter:FindFirstChild("Torso") or targetCharacter:FindFirstChild("UpperTorso")
-
-	if not targetRoot then
-		return
-	end
-
-	local vfxAttachPoint = targetTorso or targetRoot
-
-	if wasBlocked then
-		local blockEffect = BlockVFX:Clone()
-		blockEffect.Parent = vfxAttachPoint
-
-		if blockEffect:IsA("Model") then
-			blockEffect:PivotTo(vfxAttachPoint.CFrame)
-		elseif blockEffect:IsA("Part") or blockEffect:IsA("MeshPart") then
-			blockEffect.CFrame = vfxAttachPoint.CFrame
-		end
-
-		for _, obj in pairs(blockEffect:GetDescendants()) do
-			if obj:IsA("ParticleEmitter") then
-				obj:Emit(obj:GetAttribute("EmitCount") or 25)
-			end
-		end
-
-		Debris:AddItem(blockEffect, 2.0)
-	else
-		local punchEffect = PunchVFX:Clone()
-		punchEffect.Parent = vfxAttachPoint
-
-		if punchEffect:IsA("Model") then
-			punchEffect:PivotTo(vfxAttachPoint.CFrame)
-		elseif punchEffect:IsA("Part") or punchEffect:IsA("MeshPart") then
-			punchEffect.CFrame = vfxAttachPoint.CFrame
-		end
-
-		for _, obj in pairs(punchEffect:GetDescendants()) do
-			if obj:IsA("ParticleEmitter") then
-				local emitCount = obj:GetAttribute("EmitCount") or 40
-				obj:Emit(emitCount)
-
-				obj.Enabled = true
-				task.delay(0.3, function()
-					if obj then
-						obj.Enabled = false
-					end
-				end)
-			elseif obj:IsA("Beam") then
-				obj.Enabled = true
-				task.delay(0.4, function()
-					if obj then
-						obj.Enabled = false
-					end
-				end)
-			end
-		end
-
-		Debris:AddItem(punchEffect, 1.5)
-	end
-
-	local sound = Instance.new("Sound")
-	sound.SoundId = wasBlocked and "rbxassetid://9114487369" or "rbxassetid://72142112079276"
-	sound.Volume = 0.6
-	sound.Parent = vfxAttachPoint
-	sound:Play()
-	Debris:AddItem(sound, 2)
-
-	if targetCharacter == character then
-		local shakeMagnitude = wasBlocked and 0.2 or 0.5
-		local shakeTime = 0.1
-
-		local camera = workspace.CurrentCamera
-		local originalCFrame = camera.CFrame
-
-		task.spawn(function()
-			local elapsed = 0
-			while elapsed < shakeTime do
-				local shake = Vector3.new(
-					math.random(-100, 100) / 100 * shakeMagnitude,
-					math.random(-100, 100) / 100 * shakeMagnitude,
-					math.random(-100, 100) / 100 * shakeMagnitude
-				)
-				camera.CFrame = camera.CFrame * CFrame.new(shake)
-				elapsed += task.wait()
-			end
-		end)
 	end
 end
 
-local function UpdateCombo(combo)
-	currentCombo = combo
+RunService.RenderStepped:Connect(UpdateMovement)
 
-	if combo > 0 then
-		comboLabel.Text = combo .. " HIT" .. (combo > 1 and "S" or "") .. "!"
-
-		if combo >= 4 then
-			comboLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-		elseif combo >= 3 then
-			comboLabel.TextColor3 = Color3.fromRGB(255, 140, 0)
-		elseif combo >= 2 then
-			comboLabel.TextColor3 = Color3.fromRGB(255, 255, 100)
-		else
-			comboLabel.TextColor3 = Color3.new(1, 1, 1)
-		end
-
-		comboLabel.Visible = true
-
-		comboLabel.Size = UDim2.new(0, 280, 0, 70)
-		TweenService:Create(comboLabel, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-			Size = UDim2.new(0, 250, 0, 60),
-		}):Play()
-
-		if comboResetTimer then
-			task.cancel(comboResetTimer)
-		end
-
-		-- ✅ FIX: Use SETTINGS.M1.ComboResetTime
-		comboResetTimer = task.delay(SETTINGS.M1.ComboResetTime, function()
-			currentCombo = 0
-			comboLabel.Visible = false
-		end)
-	else
-		comboLabel.Visible = false
-	end
-end
-
-local keysPressed = {
-	W = false,
-	A = false,
-	S = false,
-	D = false,
-	Q = false,
-	F = false,
-}
+-- ========================================
+-- SPRINT SYSTEM
+-- ========================================
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then
-		return
-	end
-
-	if input.KeyCode == Enum.KeyCode.W then
-		keysPressed.W = true
-	elseif input.KeyCode == Enum.KeyCode.A then
-		keysPressed.A = true
-	elseif input.KeyCode == Enum.KeyCode.S then
-		keysPressed.S = true
-	elseif input.KeyCode == Enum.KeyCode.D then
-		keysPressed.D = true
-	elseif input.KeyCode == Enum.KeyCode.Q then
-		keysPressed.Q = true
-
-		if not isDashing and not isAttacking and not isBlocking then
-			if keysPressed.S then
-				PerformDash("Back")
-			elseif keysPressed.A then
-				PerformDash("Left")
-			elseif keysPressed.D then
-				PerformDash("Right")
-			else
-				PerformDash("Forward")
-			end
+	if gameProcessed then return end
+	
+	if input.KeyCode == SETTINGS.Player.SprintKey then
+		if not state.isBlocking and not state.isAttacking then
+			isSprinting = true
+			humanoid.WalkSpeed = SETTINGS.Player.SprintSpeed
+			VFXController.EnableArmAura()
 		end
-	elseif input.KeyCode == Enum.KeyCode.F then
-		if not isAttacking and not isDashing and not isBlocking then
-			isBlocking = true
-			-- ✅ FIX: Use SETTINGS.Player.BlockMoveSpeed
-			humanoid.WalkSpeed = SETTINGS.Player.BlockMoveSpeed
-			BlockEvent:FireServer(true)
-
-			if BlockVFX then
-				local blockEffect = BlockVFX:Clone()
-				blockEffect.Name = "ActiveBlock"
-				blockEffect.Parent = rootPart
-			end
-		end
-	end
-
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		local currentTime = tick()
-
-		if isAttacking then
-			return
-		end
-
-		if isDashing or isBlocking then
-			return
-		end
-
-		local timeSinceLastAttack = currentTime - lastAttackTime
-		-- ✅ FIX: Use SETTINGS.M1.MinimumAttackDelay
-		local minimumDelay = SETTINGS.M1.MinimumAttackDelay
-
-		if timeSinceLastAttack < minimumDelay then
-			return
-		end
-
-		M1Event:FireServer()
 	end
 end)
 
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
-	if input.KeyCode == Enum.KeyCode.W then
-		keysPressed.W = false
-	elseif input.KeyCode == Enum.KeyCode.A then
-		keysPressed.A = false
-	elseif input.KeyCode == Enum.KeyCode.S then
-		keysPressed.S = false
-	elseif input.KeyCode == Enum.KeyCode.D then
-		keysPressed.D = false
-	elseif input.KeyCode == Enum.KeyCode.Q then
-		keysPressed.Q = false
-	elseif input.KeyCode == Enum.KeyCode.F then
-		if isBlocking then
-			isBlocking = false
-			-- ✅ FIX: Use SETTINGS.Player.NormalMoveSpeed
-			humanoid.WalkSpeed = SETTINGS.Player.NormalMoveSpeed
-			BlockEvent:FireServer(false)
+	if input.KeyCode == SETTINGS.Player.SprintKey then
+		isSprinting = false
+		if not state.isBlocking then
+			humanoid.WalkSpeed = SETTINGS.Player.WalkSpeed
+		end
+		VFXController.DisableArmAura()
+	end
+end)
 
-			local activeBlock = rootPart:FindFirstChild("ActiveBlock")
-			if activeBlock then
-				activeBlock:Destroy()
+-- ========================================
+-- DASH SYSTEM
+-- ========================================
+
+local keysPressed = {W = false, A = false, S = false, D = false}
+
+local function PerformDash(direction: string)
+	if state.isDashing or state.isAttacking then return end
+	
+	local currentTime = tick()
+	if currentTime - state.lastDash < SETTINGS.Dash.Cooldown then return end
+	
+	state.isDashing = true
+	state.lastDash = currentTime
+	
+	-- Stop movement animation
+	if currentMoveAnim then
+		currentMoveAnim:Stop()
+	end
+	
+	-- Play dash animation
+	local dashAnim = animations[direction .. "Dash"]
+	if dashAnim then
+		dashAnim:Play()
+	end
+	
+	-- Calculate direction
+	local dashDir = Vector3.zero
+	if direction == "Front" then
+		dashDir = rootPart.CFrame.LookVector
+	elseif direction == "Back" then
+		dashDir = -rootPart.CFrame.LookVector
+	elseif direction == "SideLeft" then
+		dashDir = -rootPart.CFrame.RightVector
+	elseif direction == "SideRight" then
+		dashDir = rootPart.CFrame.RightVector
+	end
+	
+	-- Apply dash velocity
+	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.MaxForce = Vector3.new(100000, 0, 100000)
+	bodyVelocity.Velocity = dashDir * SETTINGS.Dash.Speed
+	bodyVelocity.Parent = rootPart
+	
+	task.delay(SETTINGS.Dash.Duration, function()
+		if bodyVelocity.Parent then
+			bodyVelocity:Destroy()
+		end
+		rootPart.AssemblyLinearVelocity = Vector3.zero
+		state.isDashing = false
+		
+		if dashAnim then
+			dashAnim:Stop()
+		end
+	end)
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	
+	-- Track WASD
+	if input.KeyCode == Enum.KeyCode.W then keysPressed.W = true
+	elseif input.KeyCode == Enum.KeyCode.A then keysPressed.A = true
+	elseif input.KeyCode == Enum.KeyCode.S then keysPressed.S = true
+	elseif input.KeyCode == Enum.KeyCode.D then keysPressed.D = true
+	end
+	
+	-- Dash (Q key)
+	if input.KeyCode == SETTINGS.Dash.Key then
+		if keysPressed.S then
+			PerformDash("Back")
+		elseif keysPressed.A then
+			PerformDash("SideLeft")
+		elseif keysPressed.D then
+			PerformDash("SideRight")
+		else
+			PerformDash("Front")
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if input.KeyCode == Enum.KeyCode.W then keysPressed.W = false
+	elseif input.KeyCode == Enum.KeyCode.A then keysPressed.A = false
+	elseif input.KeyCode == Enum.KeyCode.S then keysPressed.S = false
+	elseif input.KeyCode == Enum.KeyCode.D then keysPressed.D = false
+	end
+end)
+
+-- ========================================
+-- BLOCKING SYSTEM
+-- ========================================
+
+local activeBlockVFX = nil
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	
+	if input.KeyCode == SETTINGS.Block.Key then
+		if not state.isAttacking and not state.isDashing and not state.isBlocking then
+			state.isBlocking = true
+			humanoid.WalkSpeed = SETTINGS.Player.BlockSpeed
+			BlockEvent:FireServer(true)
+			
+			-- Show block VFX
+			activeBlockVFX = BlockVfx:Clone()
+			activeBlockVFX.Name = "ActiveBlock"
+			activeBlockVFX.Parent = rootPart
+			
+			-- Enable block particles
+			for _, desc in activeBlockVFX:GetDescendants() do
+				if desc:IsA("ParticleEmitter") then
+					desc.Enabled = true
+				end
 			end
 		end
 	end
 end)
 
-M1Event.OnClientEvent:Connect(function(serverCombo)
-	-- ✅ FIX: Use SETTINGS.M1.MaxComboCount
-	local nextCombo = (currentCombo % SETTINGS.M1.MaxComboCount) + 1
-
-	UpdateCombo(nextCombo)
-
-	PlayAttackAnimation(nextCombo)
-end)
-
-DamageEvent.OnClientEvent:Connect(function(targetCharacter, hitSuccess, wasBlocked)
-	if hitSuccess and targetCharacter then
-		ShowHitEffect(targetCharacter, wasBlocked)
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if input.KeyCode == SETTINGS.Block.Key then
+		if state.isBlocking then
+			state.isBlocking = false
+			humanoid.WalkSpeed = isSprinting and SETTINGS.Player.SprintSpeed or SETTINGS.Player.WalkSpeed
+			BlockEvent:FireServer(false)
+			
+			-- Remove block VFX
+			if activeBlockVFX then
+				activeBlockVFX:Destroy()
+				activeBlockVFX = nil
+			end
+		end
 	end
 end)
 
-BlockEvent.OnClientEvent:Connect(function(eventType)
+-- ========================================
+-- M1 ATTACK SYSTEM
+-- ========================================
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if state.isAttacking or state.isDashing or state.isBlocking then return end
+		
+		local currentTime = tick()
+		if currentTime - state.lastAttack < SETTINGS.M1.AttackCooldown then return end
+		
+		state.lastAttack = currentTime
+		M1Event:FireServer()
+	end
+end)
+
+-- ========================================
+-- SERVER EVENTS
+-- ========================================
+
+-- Play attack animation
+M1Event.OnClientEvent:Connect(function(combo: number, isHeavy: boolean, isFinisher: boolean)
+	state.isAttacking = true
+	state.currentCombo = combo
+	
+	-- Play animation
+	local animKey = "M" .. combo
+	local anim = animations[animKey]
+	if anim then
+		anim:Play()
+	end
+	
+	-- Get duration
+	local animData = SETTINGS.Animations[animKey]
+	local duration = animData and animData.Duration or 0.5
+	
+	-- Enable arm aura during attack
+	VFXController.EnableArmAura()
+	
+	-- End attack
+	task.delay(duration, function()
+		state.isAttacking = false
+		
+		-- Disable aura if not sprinting
+		if not isSprinting then
+			VFXController.DisableArmAura()
+		end
+	end)
+end)
+
+-- Handle hit feedback
+HitEvent.OnClientEvent:Connect(function(
+	targetChar: Model,
+	damage: number,
+	isHeavy: boolean,
+	isFinisher: boolean,
+	wasBlocked: boolean,
+	wasPerfectBlock: boolean
+))
+	local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then return end
+	
+	-- Determine damage number color
+	local color = SETTINGS.VFX.DamageNumbers.NormalColor
+	if wasPerfectBlock then
+		color = SETTINGS.VFX.DamageNumbers.CriticalColor
+	elseif wasBlocked then
+		color = SETTINGS.VFX.DamageNumbers.BlockedColor
+	elseif isFinisher then
+		color = SETTINGS.VFX.DamageNumbers.FinisherColor
+	elseif isHeavy then
+		color = SETTINGS.VFX.DamageNumbers.HeavyColor
+	end
+	
+	-- Create damage number
+	CreateDamageNumber(targetRoot.Position, damage, color, isFinisher or wasPerfectBlock)
+	
+	-- Play VFX
+	if wasBlocked then
+		VFXController.PlayBlockVFX(targetRoot, wasPerfectBlock)
+	else
+		VFXController.PlayHitVFX(targetChar, isHeavy, isFinisher)
+	end
+	
+	-- Screen shake (only if it's our character getting hit)
+	if targetChar == character then
+		if wasBlocked then
+			VFXController.ScreenShake("Blocked")
+		elseif isFinisher then
+			VFXController.ScreenShake("Finisher")
+		elseif isHeavy then
+			VFXController.ScreenShake("Heavy")
+		else
+			VFXController.ScreenShake("Normal")
+		end
+	end
+	
+	-- Play sound
+	local sound = Instance.new("Sound")
+	sound.SoundId = wasBlocked and SETTINGS.Audio.BlockHit or (isHeavy and SETTINGS.Audio.HeavyHit or SETTINGS.Audio.NormalHit)
+	sound.Volume = SETTINGS.Audio.Volume
+	sound.Parent = targetRoot
+	sound:Play()
+	Debris:AddItem(sound, 2)
+end)
+
+-- Block feedback
+BlockEvent.OnClientEvent:Connect(function(eventType: string, isPerfect: boolean)
 	if eventType == "blocked" then
-		local blockFlash = Instance.new("Part")
-		blockFlash.Size = Vector3.new(4, 4, 0.1)
-		blockFlash.Transparency = 0.7
-		blockFlash.Color = Color3.fromRGB(100, 200, 255)
-		blockFlash.Anchored = true
-		blockFlash.CanCollide = false
-		blockFlash.CFrame = rootPart.CFrame * CFrame.new(0, 0, -2)
-		blockFlash.Parent = workspace
-
-		TweenService:Create(blockFlash, TweenInfo.new(0.3), {
+		-- Flash effect
+		local flash = Instance.new("Part")
+		flash.Size = Vector3.new(4, 4, 0.1)
+		flash.Transparency = 0.5
+		flash.Color = isPerfect and Color3.fromRGB(255, 215, 0) or Color3.fromRGB(100, 200, 255)
+		flash.Anchored = true
+		flash.CanCollide = false
+		flash.CFrame = rootPart.CFrame * CFrame.new(0, 0, -2)
+		flash.Parent = workspace
+		
+		TweenService:Create(flash, TweenInfo.new(0.3), {
 			Transparency = 1,
-			Size = Vector3.new(6, 6, 0.1),
+			Size = Vector3.new(6, 6, 0.1)
 		}):Play()
-
-		Debris:AddItem(blockFlash, 0.5)
+		
+		Debris:AddItem(flash, 0.5)
 	end
 end)
 
+-- Cleanup on death
 character.Humanoid.Died:Connect(function()
-	if comboResetTimer then
-		task.cancel(comboResetTimer)
+	state.isAttacking = false
+	state.isDashing = false
+	state.isBlocking = false
+	state.currentCombo = 0
+	isSprinting = false
+	
+	VFXController.DisableArmAura()
+	
+	if activeBlockVFX then
+		activeBlockVFX:Destroy()
+		activeBlockVFX = nil
 	end
-	isAttacking = false
-	isDashing = false
-	isBlocking = false
-	currentCombo = 0
 end)
+
+print("✅ CombatClient initialized (TSB-style)")
