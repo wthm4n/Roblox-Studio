@@ -176,8 +176,8 @@ CombatSettings.Audio = {
 	BlockHit = "rbxassetid://137630794322989",
 	Dash = "", -- Add dash sound
 
-	Volume = 0.6,
-	HitVolume = 0.7, -- Volume specifically for M1 hits
+	Volume = 5,
+	HitVolume = 10, -- Volume specifically for M1 hits
 }
 
 return table.freeze(CombatSettings)
