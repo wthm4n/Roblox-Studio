@@ -1,10 +1,10 @@
 --[[
 	CombatServer.lua
 	
-	Professional server-side combat system inspired by TSB.
-	Features: M1 combos, heavy attacks, blocking, damage validation.
+	TSB-inspired server combat with spatial hitbox system.
+	Features: Multi-target hits, camera-based attacks, dash combat.
 	
-	Author: [Your Name]
+	Author: Combat System Rewrite
 ]]
 
 local Players = game:GetService("Players")
@@ -38,6 +38,7 @@ end
 local M1Event = CreateRemote("M1Attack", "RemoteEvent")
 local BlockEvent = CreateRemote("Block", "RemoteEvent")
 local HitEvent = CreateRemote("Hit", "RemoteEvent")
+local DashEvent = CreateRemote("Dash", "RemoteEvent")
 
 -- ========================================
 -- PLAYER DATA
@@ -51,6 +52,7 @@ local function InitializePlayerData(player: Player)
 		Combo = 0,
 		IsAttacking = false,
 		IsBlocking = false,
+		IsDashing = false,
 		LastBlockTime = 0,
 
 		-- Timing
@@ -82,13 +84,12 @@ local function CleanupPlayerData(player: Player)
 end
 
 -- ========================================
--- COMBAT LOGIC
+-- COMBAT SERVICE
 -- ========================================
 
 local CombatService = {}
 
--- Check if attack should be heavy
-function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart): boolean
+function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart, isDashing: boolean): boolean
 	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if not humanoid then
 		return false
@@ -96,21 +97,26 @@ function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart): boolea
 
 	local conditions = CombatSettings.M1.HeavyConditions
 
-	-- Check if sprinting (moving faster than walk speed)
+	-- Dashing = always heavy
+	if isDashing then
+		return true
+	end
+
+	-- Check sprint
 	if conditions.RequiresSprint then
 		if humanoid.WalkSpeed > CombatSettings.Player.WalkSpeed then
 			return true
 		end
 	end
 
-	-- Check if in air (jumping)
+	-- Check airborne
 	if conditions.RequiresJump then
 		local rayParams = RaycastParams.new()
 		rayParams.FilterDescendantsInstances = { player.Character }
-		rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+		rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 		local ray = workspace:Raycast(rootPart.Position, Vector3.new(0, -4, 0), rayParams)
-		if not ray then -- Not touching ground
+		if not ray then
 			return true
 		end
 	end
@@ -126,7 +132,6 @@ function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart): boolea
 	return false
 end
 
--- Calculate damage based on attack type
 function CombatService.CalculateDamage(combo: number, isHeavy: boolean, isFinisher: boolean): number
 	if isFinisher then
 		return CombatSettings.M1.FinisherDamage
@@ -137,7 +142,6 @@ function CombatService.CalculateDamage(combo: number, isHeavy: boolean, isFinish
 	end
 end
 
--- Calculate knockback
 function CombatService.CalculateKnockback(combo: number, isHeavy: boolean, isFinisher: boolean)
 	local kb
 	if isFinisher then
@@ -151,7 +155,6 @@ function CombatService.CalculateKnockback(combo: number, isHeavy: boolean, isFin
 	return kb[1], kb[2]
 end
 
--- Apply damage to target
 function CombatService.ApplyDamage(
 	attacker: Player,
 	targetData: { Character: Model, Humanoid: Humanoid, RootPart: BasePart },
@@ -159,7 +162,7 @@ function CombatService.ApplyDamage(
 	knockbackH: number,
 	knockbackV: number,
 	attackerRoot: BasePart
-): (boolean, boolean, boolean) -- success, wasBlocked, wasPerfectBlock
+): (boolean, boolean, boolean)
 	if not targetData or not targetData.Humanoid or targetData.Humanoid.Health <= 0 then
 		return false, false, false
 	end
@@ -170,12 +173,12 @@ function CombatService.ApplyDamage(
 
 	-- Check blocking
 	if targetPlayer then
-		local targetData = GetPlayerData(targetPlayer)
-		if targetData and targetData.IsBlocking then
+		local data = GetPlayerData(targetPlayer)
+		if data and data.IsBlocking then
 			wasBlocked = true
 
-			-- Check for perfect block (blocked within window)
-			local timeSinceBlock = tick() - targetData.LastBlockTime
+			-- Perfect block check
+			local timeSinceBlock = tick() - data.LastBlockTime
 			if timeSinceBlock <= CombatSettings.Block.PerfectBlockWindow then
 				wasPerfectBlock = true
 				damage *= CombatSettings.Block.PerfectBlockReduction
@@ -204,16 +207,13 @@ function CombatService.ApplyDamage(
 	return true, wasBlocked, wasPerfectBlock
 end
 
--- Increment combo
 function CombatService.IncrementCombo(data): number
 	data.Combo = math.min(data.Combo + 1, CombatSettings.M1.MaxCombo)
 
-	-- Cancel existing reset
 	if data.ComboResetTask then
 		task.cancel(data.ComboResetTask)
 	end
 
-	-- Schedule reset
 	data.ComboResetTask = task.delay(CombatSettings.M1.ComboResetTime, function()
 		data.Combo = 0
 		data.ComboResetTask = nil
@@ -223,11 +223,11 @@ function CombatService.IncrementCombo(data): number
 end
 
 -- ========================================
--- M1 ATTACK HANDLER
+-- M1 ATTACK HANDLER (Multi-Target)
 -- ========================================
 
-M1Event.OnServerEvent:Connect(function(player: Player)
-	-- Validate player
+M1Event.OnServerEvent:Connect(function(player: Player, cameraLookVector: Vector3?)
+	-- Validate
 	if not CombatUtilities.ValidatePlayer(player) then
 		return
 	end
@@ -237,7 +237,6 @@ M1Event.OnServerEvent:Connect(function(player: Player)
 		return
 	end
 
-	-- Validate character
 	local character = player.Character
 	local charValid, err, humanoid, rootPart = CombatUtilities.ValidateCharacter(character)
 	if not charValid then
@@ -250,18 +249,18 @@ M1Event.OnServerEvent:Connect(function(player: Player)
 		return
 	end
 
-	-- Check state
+	-- State checks
 	if data.IsAttacking or data.IsBlocking then
 		return
 	end
 
-	-- Check cooldown
+	-- Cooldown check
 	local currentTime = tick()
 	if currentTime - data.LastAttackTime < CombatSettings.M1.AttackCooldown then
 		return
 	end
 
-	-- Check combo reset
+	-- Combo reset check
 	if currentTime - data.LastAttackTime > CombatSettings.M1.ComboResetTime then
 		data.Combo = 0
 		if data.ComboResetTask then
@@ -276,28 +275,46 @@ M1Event.OnServerEvent:Connect(function(player: Player)
 	local combo = CombatService.IncrementCombo(data)
 
 	-- Determine attack type
-	local isHeavy = CombatService.IsHeavyAttack(player, rootPart)
+	local isHeavy = CombatService.IsHeavyAttack(player, rootPart, data.IsDashing)
 	local isFinisher = combo == CombatSettings.M1.MaxCombo
 
-	-- Get animation duration
+	-- Animation data
 	local animKey = "M" .. combo
 	local animData = CombatSettings.Animations[animKey]
 	local animDuration = animData and animData.Duration or 0.5
-	local hitFrame = animData and animData.HitFrame or 0.4
+	local hitFrame = animData and animData.HitFrame or 0.2
 
-	-- Send to client to play animation
+	-- Send animation to client
 	M1Event:FireClient(player, combo, isHeavy, isFinisher)
 
 	-- Schedule hit detection
 	task.delay(animDuration * hitFrame, function()
-		-- Find target
-		local target = CombatUtilities.GetTargetInFront(
+		-- Calculate hitbox parameters
+		local range = CombatSettings.M1.HitboxRange
+		local angle = CombatSettings.M1.HitboxAngle
+		
+		-- Dash attacks have bigger range and hit 360
+		if data.IsDashing and CombatSettings.Dash.AllowAttackDuringDash then
+			range *= CombatSettings.Dash.DashAttackRangeMultiplier
+			if CombatSettings.Dash.DashAttackHits360 then
+				angle = 180 -- Full circle
+			end
+		end
+
+		-- Get ALL targets in hitbox (MULTI-TARGET)
+		local targets = CombatUtilities.GetTargetsInHitbox(
 			character,
-			CombatSettings.M1.AttackRange,
-			math.cos(math.rad(CombatSettings.M1.AttackAngle))
+			range,
+			angle,
+			cameraLookVector, -- Camera-based if provided
+			data.IsDashing
 		)
 
-		if target then
+		-- Limit max targets
+		local maxTargets = CombatSettings.M1.MaxTargetsPerHit
+		for i = 1, math.min(#targets, maxTargets) do
+			local target = targets[i]
+
 			-- Calculate damage and knockback
 			local damage = CombatService.CalculateDamage(combo, isHeavy, isFinisher)
 			local knockbackH, knockbackV = CombatService.CalculateKnockback(combo, isHeavy, isFinisher)
@@ -311,8 +328,9 @@ M1Event.OnServerEvent:Connect(function(player: Player)
 				CombatUtilities.ApplyStun(target.Humanoid, CombatSettings.M1.FinisherStunDuration)
 			end
 
-			-- Send hit event to both players
+			-- INSTANT VFX: Send hit event immediately when damage applies
 			if success then
+				-- Attacker sees hit
 				HitEvent:FireClient(
 					player,
 					target.Character,
@@ -324,7 +342,7 @@ M1Event.OnServerEvent:Connect(function(player: Player)
 					wasPerfectBlock
 				)
 
-				-- Send hit feedback to target too
+				-- Target sees hit
 				local targetPlayer = Players:GetPlayerFromCharacter(target.Character)
 				if targetPlayer then
 					HitEvent:FireClient(
@@ -342,7 +360,7 @@ M1Event.OnServerEvent:Connect(function(player: Player)
 		end
 	end)
 
-	-- Schedule attack end
+	-- End attack state
 	data.AttackEndTask = task.delay(animDuration, function()
 		data.IsAttacking = false
 		data.AttackEndTask = nil
@@ -364,6 +382,19 @@ BlockEvent.OnServerEvent:Connect(function(player: Player, isBlocking: boolean)
 	if isBlocking then
 		data.LastBlockTime = tick()
 	end
+end)
+
+-- ========================================
+-- DASH HANDLER
+-- ========================================
+
+DashEvent.OnServerEvent:Connect(function(player: Player, isDashing: boolean)
+	local data = GetPlayerData(player)
+	if not data then
+		return
+	end
+
+	data.IsDashing = isDashing
 end)
 
 -- ========================================
@@ -393,12 +424,13 @@ local function OnPlayerAdded(player: Player)
 			end
 		end)
 
-		-- Reset combat state
+		-- Reset state
 		local data = GetPlayerData(player)
 		if data then
 			data.Combo = 0
 			data.IsAttacking = false
 			data.IsBlocking = false
+			data.IsDashing = false
 			data.LastAttackTime = 0
 		end
 	end)
@@ -407,9 +439,8 @@ end
 Players.PlayerAdded:Connect(OnPlayerAdded)
 Players.PlayerRemoving:Connect(CleanupPlayerData)
 
--- Initialize existing players
 for _, player in Players:GetPlayers() do
 	task.spawn(OnPlayerAdded, player)
 end
 
-print("✅ CombatServer initialized (TSB-style)")
+print("✅ CombatServer initialized (TSB Multi-Target)")
