@@ -10,13 +10,13 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
-local SETTINGS = require(ReplicatedStorage:WaitForChild("CombatSettings"))
+local SETTINGS = require(ReplicatedStorage.Modules.Combat:WaitForChild("CombatSettings"))
 local RemoteFolder = ReplicatedStorage:WaitForChild("CombatRemotes")
 local M1Event = RemoteFolder:WaitForChild("M1Attack")
 local BlockEvent = RemoteFolder:WaitForChild("Block")
 local DamageEvent = RemoteFolder:WaitForChild("DamageRequest")
 
-local CombatVFX = ReplicatedStorage:WaitForChild("CombatVFX")
+local CombatVFX = ReplicatedStorage.Assets.Combat:WaitForChild("CombatVFX")
 local PunchVFX = CombatVFX:WaitForChild("Punch vfx")
 local BlockVFX = CombatVFX:WaitForChild("block vfx")
 

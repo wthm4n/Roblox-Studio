@@ -29,49 +29,39 @@ function BaseAbility:SpawnDebris(position, debrisConfig)
 	local debris = Instance.new("Part")
 	debris.Name = debrisConfig.Name or "Debris"
 	debris.Size = debrisConfig.Size or Vector3.new(2, 2, 2)
-	debris.CFrame = position * CFrame.new(
-		math.random(-5, 5),
-		math.random(0, 2),
-		math.random(-5, 5)
-	)
+	debris.CFrame = position * CFrame.new(math.random(-5, 5), math.random(0, 2), math.random(-5, 5))
 	debris.Material = debrisConfig.Material or Enum.Material.Slate
 	debris.Color = debrisConfig.Color or Color3.fromRGB(100, 100, 100)
 	debris.CanCollide = true
 	debris.Parent = workspace
 
-	debris.CFrame = debris.CFrame * CFrame.Angles(
-		math.rad(math.random(0, 360)),
-		math.rad(math.random(0, 360)),
-		math.rad(math.random(0, 360))
-	)
+	debris.CFrame = debris.CFrame
+		* CFrame.Angles(math.rad(math.random(0, 360)), math.rad(math.random(0, 360)), math.rad(math.random(0, 360)))
 
 	local bodyVelocity = Instance.new("BodyVelocity")
 	bodyVelocity.MaxForce = Vector3.new(50000, 50000, 50000)
-	bodyVelocity.Velocity = debrisConfig.Velocity or Vector3.new(
-		math.random(-30, 30),
-		math.random(40, 70),
-		math.random(-30, 30)
-	)
+	bodyVelocity.Velocity = debrisConfig.Velocity
+		or Vector3.new(math.random(-30, 30), math.random(40, 70), math.random(-30, 30))
 	bodyVelocity.Parent = debris
 
 	local bodyAngularVelocity = Instance.new("BodyAngularVelocity")
 	bodyAngularVelocity.MaxTorque = Vector3.new(50000, 50000, 50000)
-	bodyAngularVelocity.AngularVelocity = Vector3.new(
-		math.random(-10, 10),
-		math.random(-10, 10),
-		math.random(-10, 10)
-	)
+	bodyAngularVelocity.AngularVelocity = Vector3.new(math.random(-10, 10), math.random(-10, 10), math.random(-10, 10))
 	bodyAngularVelocity.Parent = debris
 
 	task.delay(0.2, function()
-		if bodyVelocity.Parent then bodyVelocity:Destroy() end
-		if bodyAngularVelocity.Parent then bodyAngularVelocity:Destroy() end
+		if bodyVelocity.Parent then
+			bodyVelocity:Destroy()
+		end
+		if bodyAngularVelocity.Parent then
+			bodyAngularVelocity:Destroy()
+		end
 	end)
 
 	task.delay(1.5, function()
 		if debris.Parent then
 			TweenService:Create(debris, TweenInfo.new(1), {
-				Transparency = 1
+				Transparency = 1,
 			}):Play()
 		end
 	end)
@@ -97,14 +87,12 @@ function BaseAbility:CreateShockwave(position, config)
 	mesh.MeshType = config.MeshType or Enum.MeshType.Sphere
 	mesh.Parent = shockwave
 
-	TweenService:Create(shockwave, TweenInfo.new(
-		config.Duration or 0.5,
-		Enum.EasingStyle.Quad,
-		Enum.EasingDirection.Out
-		), {
+	TweenService
+		:Create(shockwave, TweenInfo.new(config.Duration or 0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 			Size = config.EndSize or Vector3.new(30, 15, 30),
-			Transparency = 1
-		}):Play()
+			Transparency = 1,
+		})
+		:Play()
 
 	Debris:AddItem(shockwave, (config.Duration or 0.5) + 0.1)
 
@@ -119,7 +107,9 @@ function BaseAbility:EmitParticles(vfxClone, emitCount)
 		elseif descendant:IsA("Beam") then
 			descendant.Enabled = true
 			task.delay(1, function()
-				if descendant then descendant.Enabled = false end
+				if descendant then
+					descendant.Enabled = false
+				end
 			end)
 		end
 	end

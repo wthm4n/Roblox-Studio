@@ -2,7 +2,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Debris = game:GetService("Debris")
 
-local BaseAbility = require(ReplicatedStorage.Abilities.BaseAbility)
+local BaseAbility = require(ReplicatedStorage.Modules.Combat.Abilities.BaseAbility)
 
 local GroundSlam = BaseAbility.new({
 	Name = "Ground Slam",

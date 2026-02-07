@@ -2,7 +2,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 
-local SETTINGS = require(ReplicatedStorage:WaitForChild("CombatSettings"))
+local SETTINGS = require(ReplicatedStorage.Modules.Combat:WaitForChild("CombatSettings"))
 
 local RemoteFolder = Instance.new("Folder")
 RemoteFolder.Name = "CombatRemotes"

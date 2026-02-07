@@ -2,7 +2,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 
-local AbilitiesFolder = ReplicatedStorage:WaitForChild("Abilities")
+local AbilitiesFolder = ReplicatedStorage.Modules.Combat:WaitForChild("Abilities")
 
 local AbilityRemotes = Instance.new("Folder")
 AbilityRemotes.Name = "AbilityRemotes"
