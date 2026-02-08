@@ -1,18 +1,25 @@
 --[[
-	CombatServer.lua
+	AdvancedCombatServer.lua
 	
-	TSB-inspired server combat with spatial hitbox system.
-	Features: Multi-target hits, camera-based attacks, dash combat.
+	Advanced server combat with:
+	- Block durability system
+	- Block breaking mechanic
+	- Hit reaction triggers
+	- M1-M5 combo
 	
-	Author: Combat System Rewrite
+	Author: Advanced Combat System
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Modules
 local CombatSettings = require(ReplicatedStorage.Modules.Combat.CombatSettings)
 local CombatUtilities = require(ReplicatedStorage.Modules.Combat.CombatUtilities)
+
+local MovementServer = nil
+pcall(function()
+	MovementServer = require(ReplicatedStorage.Modules.Movement.MovementServer)
+end)
 
 -- ========================================
 -- SETUP REMOTES
@@ -35,11 +42,10 @@ local function CreateRemote(name: string, class: string)
 	return remote
 end
 
-local M1Event = CreateRemote("M1Attack", "RemoteEvent")
+local HitRequestEvent = CreateRemote("HitRequest", "RemoteEvent")
+local HitResultEvent = CreateRemote("HitResult", "RemoteEvent")
 local BlockEvent = CreateRemote("Block", "RemoteEvent")
-local HitEvent = CreateRemote("Hit", "RemoteEvent")
-local DashEvent = CreateRemote("Dash", "RemoteEvent")
-local SoundEvent = CreateRemote("PlaySound", "UnreliableRemoteEvent") -- For instant sound sync
+local BlockDamageEvent = CreateRemote("BlockDamage", "RemoteEvent")
 
 -- ========================================
 -- PLAYER DATA
@@ -50,16 +56,12 @@ local PlayerData = {}
 local function InitializePlayerData(player: Player)
 	PlayerData[player.UserId] = {
 		-- Combat state
-		Combo = 0,
-		IsAttacking = false,
 		IsBlocking = false,
-		IsDashing = false,
 		LastBlockTime = 0,
+		BlockHealth = CombatSettings.Block.MaxHealth,
 
 		-- Timing
-		LastAttackTime = 0,
-		ComboResetTask = nil,
-		AttackEndTask = nil,
+		LastHitRequestTime = 0,
 
 		-- Anti-exploit
 		Cooldowns = CombatUtilities.CreateCooldownTracker(),
@@ -72,15 +74,6 @@ local function GetPlayerData(player: Player)
 end
 
 local function CleanupPlayerData(player: Player)
-	local data = PlayerData[player.UserId]
-	if data then
-		if data.ComboResetTask then
-			task.cancel(data.ComboResetTask)
-		end
-		if data.AttackEndTask then
-			task.cancel(data.AttackEndTask)
-		end
-	end
 	PlayerData[player.UserId] = nil
 end
 
@@ -90,7 +83,7 @@ end
 
 local CombatService = {}
 
-function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart, isDashing: boolean): boolean
+function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart): boolean
 	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 	if not humanoid then
 		return false
@@ -98,19 +91,14 @@ function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart, isDashi
 
 	local conditions = CombatSettings.M1.HeavyConditions
 
-	-- Dashing = always heavy
-	if isDashing then
-		return true
-	end
-
-	-- Check sprint
 	if conditions.RequiresSprint then
-		if humanoid.WalkSpeed > CombatSettings.Player.WalkSpeed then
+		if MovementServer and MovementServer.IsPlayerSprinting(player) then
+			return true
+		elseif humanoid.WalkSpeed > CombatSettings.Player.WalkSpeed then
 			return true
 		end
 	end
 
-	-- Check airborne
 	if conditions.RequiresJump then
 		local rayParams = RaycastParams.new()
 		rayParams.FilterDescendantsInstances = { player.Character }
@@ -122,7 +110,6 @@ function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart, isDashi
 		end
 	end
 
-	-- Check velocity
 	if conditions.MinVelocity then
 		local velocity = rootPart.AssemblyLinearVelocity.Magnitude
 		if velocity > conditions.MinVelocity then
@@ -162,14 +149,16 @@ function CombatService.ApplyDamage(
 	damage: number,
 	knockbackH: number,
 	knockbackV: number,
-	attackerRoot: BasePart
-): (boolean, boolean, boolean)
+	attackerRoot: BasePart,
+	attackerCombo: number
+): (boolean, boolean, boolean, boolean)
 	if not targetData or not targetData.Humanoid or targetData.Humanoid.Health <= 0 then
-		return false, false, false
+		return false, false, false, false
 	end
 
 	local wasBlocked = false
 	local wasPerfectBlock = false
+	local blockBroken = false
 	local targetPlayer = Players:GetPlayerFromCharacter(targetData.Character)
 
 	-- Check blocking
@@ -191,6 +180,28 @@ function CombatService.ApplyDamage(
 				knockbackV *= CombatSettings.Block.KnockbackReduction
 			end
 
+			-- Reduce block health
+			local blockDamage = CombatSettings.Block.DamagePerHit
+			data.BlockHealth = math.max(0, data.BlockHealth - blockDamage)
+
+			-- Send block damage event to client (triggers blocking hit reaction)
+			BlockDamageEvent:FireClient(targetPlayer, blockDamage, attackerCombo)
+
+			-- Check if block broken
+			if data.BlockHealth <= 0 then
+				blockBroken = true
+				data.IsBlocking = false
+				data.BlockHealth = 0
+
+				-- Apply stun
+				CombatUtilities.ApplyStun(targetData.Humanoid, CombatSettings.Block.BreakStunDuration)
+
+				-- Increase damage/knockback for block break
+				damage *= 1.5
+				knockbackH *= 2
+				knockbackV *= 2
+			end
+
 			-- Notify blocker
 			BlockEvent:FireClient(targetPlayer, "blocked", wasPerfectBlock)
 		end
@@ -205,30 +216,14 @@ function CombatService.ApplyDamage(
 		CombatUtilities.ApplyKnockback(targetData.RootPart, direction, knockbackH, knockbackV, 0.15)
 	end
 
-	return true, wasBlocked, wasPerfectBlock
-end
-
-function CombatService.IncrementCombo(data): number
-	data.Combo = math.min(data.Combo + 1, CombatSettings.M1.MaxCombo)
-
-	if data.ComboResetTask then
-		task.cancel(data.ComboResetTask)
-	end
-
-	data.ComboResetTask = task.delay(CombatSettings.M1.ComboResetTime, function()
-		data.Combo = 0
-		data.ComboResetTask = nil
-	end)
-
-	return data.Combo
+	return true, wasBlocked, wasPerfectBlock, blockBroken
 end
 
 -- ========================================
--- M1 ATTACK HANDLER (Multi-Target)
+-- HIT REQUEST HANDLER
 -- ========================================
 
-M1Event.OnServerEvent:Connect(function(player: Player, cameraLookVector: Vector3?)
-	-- Validate
+HitRequestEvent.OnServerEvent:Connect(function(player: Player, combo: number, cameraLookVector: Vector3?)
 	if not CombatUtilities.ValidatePlayer(player) then
 		return
 	end
@@ -250,163 +245,83 @@ M1Event.OnServerEvent:Connect(function(player: Player, cameraLookVector: Vector3
 		return
 	end
 
-	-- State checks
-	if data.IsAttacking or data.IsBlocking then
-		return
-	end
-
 	-- Cooldown check
 	local currentTime = tick()
-	if currentTime - data.LastAttackTime < CombatSettings.M1.AttackCooldown then
+	if currentTime - data.LastHitRequestTime < CombatSettings.M1.HitRequestCooldown then
+		return
+	end
+	data.LastHitRequestTime = currentTime
+
+	-- Validate combo (1-5)
+	if not combo or combo < 1 or combo > CombatSettings.M1.MaxCombo then
+		warn(player.Name .. " sent invalid combo: " .. tostring(combo))
 		return
 	end
 
-	-- Combo reset check
-	if currentTime - data.LastAttackTime > CombatSettings.M1.ComboResetTime then
-		data.Combo = 0
-		if data.ComboResetTask then
-			task.cancel(data.ComboResetTask)
-			data.ComboResetTask = nil
-		end
-	end
-
-	-- Update state
-	data.IsAttacking = true
-	data.LastAttackTime = currentTime
-
-	-- Increment combo BEFORE checking max
-	local combo = CombatService.IncrementCombo(data)
-
-	-- Check if this was the finisher (M4)
-	local isFinisher = combo == CombatSettings.M1.MaxCombo
-
-	-- COMBO LOOP FIX: Reset to 1 after M4
-	if isFinisher then
-		-- Schedule combo reset to M1 after this attack
-		if data.ComboResetTask then
-			task.cancel(data.ComboResetTask)
-		end
-		data.ComboResetTask = task.delay(0.1, function()
-			data.Combo = 0 -- Will become 1 on next attack
-			data.ComboResetTask = nil
-		end)
+	if data.IsBlocking then
+		return
 	end
 
 	-- Determine attack type
-	local isHeavy = CombatService.IsHeavyAttack(player, rootPart, data.IsDashing)
+	local isFinisher = combo == CombatSettings.M1.MaxCombo
+	local isHeavy = CombatService.IsHeavyAttack(player, rootPart)
 
-	-- Animation data
-	local animKey = "M" .. combo
-	local animData = CombatSettings.Animations[animKey]
-	local animDuration = animData and animData.Duration or 0.5
-	local hitFrame = animData and animData.HitFrame or 0.15
+	local range = CombatSettings.M1.HitboxRange
+	local angle = CombatSettings.M1.HitboxAngle
 
-	-- Send animation to client
-	M1Event:FireClient(player, combo, isHeavy, isFinisher)
+	-- Get targets
+	local targets = CombatUtilities.GetTargetsInHitbox(character, range, angle, cameraLookVector, false)
 
-	-- Schedule hit detection (EARLIER for snappier feel)
-	task.delay(animDuration * hitFrame, function()
-		-- Calculate hitbox parameters
-		local range = CombatSettings.M1.HitboxRange
-		local angle = CombatSettings.M1.HitboxAngle
+	local maxTargets = CombatSettings.M1.MaxTargetsPerHit
 
-		-- Dash attacks have bigger range and hit 360
-		if data.IsDashing and CombatSettings.Dash.AllowAttackDuringDash then
-			range *= CombatSettings.Dash.DashAttackRangeMultiplier
-			if CombatSettings.Dash.DashAttackHits360 then
-				angle = 180 -- Full circle
-			end
+	for i = 1, math.min(#targets, maxTargets) do
+		local target = targets[i]
+
+		local damage = CombatService.CalculateDamage(combo, isHeavy, isFinisher)
+		local knockbackH, knockbackV = CombatService.CalculateKnockback(combo, isHeavy, isFinisher)
+
+		local success, wasBlocked, wasPerfectBlock, blockBroken =
+			CombatService.ApplyDamage(player, target, damage, knockbackH, knockbackV, rootPart, combo)
+
+		-- Apply finisher stun (if not blocked and not already stunned from block break)
+		if isFinisher and success and not wasBlocked and not blockBroken then
+			CombatUtilities.ApplyStun(target.Humanoid, CombatSettings.M1.FinisherStunDuration)
 		end
 
-		-- Get ALL targets in hitbox (MULTI-TARGET)
-		local targets = CombatUtilities.GetTargetsInHitbox(
-			character,
-			range,
-			angle,
-			cameraLookVector, -- Camera-based if provided
-			data.IsDashing
-		)
+		if success then
+			local hitData = {
+				targetChar = target.Character,
+				damage = damage,
+				combo = combo,
+				isHeavy = isHeavy,
+				isFinisher = isFinisher,
+				wasBlocked = wasBlocked,
+				wasPerfectBlock = wasPerfectBlock,
+				blockBroken = blockBroken,
+			}
 
-		-- Limit max targets
-		local maxTargets = CombatSettings.M1.MaxTargetsPerHit
-		for i = 1, math.min(#targets, maxTargets) do
-			local target = targets[i]
+			-- Send to attacker
+			HitResultEvent:FireClient(player, hitData)
 
-			-- Calculate damage and knockback
-			local damage = CombatService.CalculateDamage(combo, isHeavy, isFinisher)
-			local knockbackH, knockbackV = CombatService.CalculateKnockback(combo, isHeavy, isFinisher)
-
-			-- Apply damage
-			local success, wasBlocked, wasPerfectBlock =
-				CombatService.ApplyDamage(player, target, damage, knockbackH, knockbackV, rootPart)
-
-			-- Apply finisher stun
-			if isFinisher and success and not wasBlocked then
-				CombatUtilities.ApplyStun(target.Humanoid, CombatSettings.M1.FinisherStunDuration)
+			-- Send to target
+			local targetPlayer = Players:GetPlayerFromCharacter(target.Character)
+			if targetPlayer then
+				HitResultEvent:FireClient(targetPlayer, hitData)
 			end
 
-			-- INSTANT VFX: Send hit event immediately when damage applies
-			if success then
-				-- Attacker sees hit
-				HitEvent:FireClient(
-					player,
-					target.Character,
-					damage,
-					combo,
-					isHeavy,
-					isFinisher,
-					wasBlocked,
-					wasPerfectBlock
-				)
-
-				-- Target sees hit
-				local targetPlayer = Players:GetPlayerFromCharacter(target.Character)
-				if targetPlayer then
-					HitEvent:FireClient(
-						targetPlayer,
-						target.Character,
-						damage,
-						combo,
-						isHeavy,
-						isFinisher,
-						wasBlocked,
-						wasPerfectBlock
-					)
-				end
-
-				-- INSTANT SOUND: unreliable network for lowest latency
-				local soundId
-				if wasBlocked then
-					soundId = "BlockHit"
-				else
-					if combo == 1 then
-						soundId = "M1Sound"
-					elseif combo == 2 then
-						soundId = "M2Sound"
-					elseif combo == 3 then
-						soundId = "M3Sound"
-					elseif combo == 4 then
-						soundId = "M4Sound"
-					end
-				end
-				SoundEvent:FireClient(player, target.RootPart.Position, soundId)
-				for _, p in Players:GetPlayers() do
-					if p ~= player and p.Character then
-						local r = p.Character:FindFirstChild("HumanoidRootPart")
-						if r and (r.Position - target.RootPart.Position).Magnitude < 100 then
-							SoundEvent:FireClient(p, target.RootPart.Position, soundId)
+			-- Send to spectators
+			for _, otherPlayer in Players:GetPlayers() do
+				if otherPlayer ~= player and otherPlayer ~= targetPlayer then
+					if otherPlayer.Character then
+						local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+						if otherRoot and (otherRoot.Position - target.RootPart.Position).Magnitude < 100 then
+							HitResultEvent:FireClient(otherPlayer, hitData)
 						end
 					end
 				end
 			end
 		end
-	end)
-
-	-- End attack state
-	data.AttackEndTask = task.delay(animDuration, function()
-		data.IsAttacking = false
-		data.AttackEndTask = nil
-	end)
+	end
 end)
 
 -- ========================================
@@ -423,20 +338,9 @@ BlockEvent.OnServerEvent:Connect(function(player: Player, isBlocking: boolean)
 
 	if isBlocking then
 		data.LastBlockTime = tick()
+		-- Reset block health when starting to block
+		data.BlockHealth = CombatSettings.Block.MaxHealth
 	end
-end)
-
--- ========================================
--- DASH HANDLER
--- ========================================
-
-DashEvent.OnServerEvent:Connect(function(player: Player, isDashing: boolean)
-	local data = GetPlayerData(player)
-	if not data then
-		return
-	end
-
-	data.IsDashing = isDashing
 end)
 
 -- ========================================
@@ -452,28 +356,14 @@ local function OnPlayerAdded(player: Player)
 			return
 		end
 
-		-- Set health
 		humanoid.MaxHealth = CombatSettings.Player.MaxHealth
 		humanoid.Health = CombatSettings.Player.MaxHealth
 
-		-- Health regen
-		task.spawn(function()
-			while character.Parent and humanoid.Health > 0 do
-				if humanoid.Health < humanoid.MaxHealth then
-					humanoid.Health = math.min(humanoid.Health + CombatSettings.Player.HealthRegen, humanoid.MaxHealth)
-				end
-				task.wait(1)
-			end
-		end)
-
-		-- Reset state
 		local data = GetPlayerData(player)
 		if data then
-			data.Combo = 0
-			data.IsAttacking = false
 			data.IsBlocking = false
-			data.IsDashing = false
-			data.LastAttackTime = 0
+			data.BlockHealth = CombatSettings.Block.MaxHealth
+			data.LastHitRequestTime = 0
 		end
 	end)
 end
@@ -485,4 +375,4 @@ for _, player in Players:GetPlayers() do
 	task.spawn(OnPlayerAdded, player)
 end
 
-print("✅ CombatServer initialized (TSB Multi-Target)")
+print("✅ AdvancedCombatServer initialized")
