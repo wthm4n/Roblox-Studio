@@ -1,5 +1,5 @@
 --[[
-    MovementSettings.lua - UPDATED FOR CAMERA CONTROL
+    MovementSettings.lua - WITH WEDGE CLIMBING
     
     Complete movement system configuration
 ]]
@@ -10,10 +10,8 @@ local MovementSettings = {}
 MovementSettings.Player = {
 	MaxHealth = 100,
 	HealthRegen = 2,
-	-- Movement speeds (no run key - automatic based on velocity)
 	WalkSpeed = 16,
-	RunSpeed = 22, -- Used for animation switching threshold
-	-- Character properties
+	RunSpeed = 22,
 	HipHeight = 2,
 }
 -- ========================================
@@ -21,47 +19,53 @@ MovementSettings.Player = {
 -- ========================================
 MovementSettings.Dash = {
 	Key = Enum.KeyCode.Q,
-	Speed = 95, -- Dash speed
-	Duration = 0.25, -- How long dash lasts
-	Cooldown = 1.0, -- Cooldown between dashes
+	Speed = 95,
+	Duration = 0.25,
+	Cooldown = 1.0,
 }
 -- ========================================
 -- SLIDE SYSTEM
 -- ========================================
 MovementSettings.Slide = {
 	Key = Enum.KeyCode.C,
-	Speed = 45, -- Slide speed
-	Duration = 1.2, -- How long slide lasts
-	Cooldown = 2.0, -- Cooldown between slides
-	HipHeight = 0.5, -- Lowered hip height during slide
+	Speed = 45,
+	Duration = 1.2,
+	Cooldown = 2.0,
+	HipHeight = 0.5,
 }
 -- ========================================
--- WALL RUN SYSTEM - TRUE CAMERA CONTROL
+-- WALL RUN SYSTEM
 -- ========================================
 MovementSettings.WallRun = {
-	-- Detection
-	DetectionRange = 3.5, -- How far to detect walls (studs)
-	MaxSlopeAngle = 0.3, -- Max Y component of wall normal (0 = vertical, 1 = horizontal)
-	MinSpeed = 10, -- Minimum horizontal speed required to wall run
-	-- Physics
-	Speed = 30, -- Base movement speed (used for both horizontal and vertical)
-	-- REMOVED: UpwardForce (camera pitch now controls vertical movement directly)
-
-	-- Timing
-	Duration = 4.0, -- Max wall run duration
-	GracePeriod = 0.3, -- Time allowed to lose wall contact before ending
-	Cooldown = 0.5, -- Cooldown after wall run ends
-	-- Jump
-	JumpOffForce = 60, -- Boost when jumping off wall
-	-- Behavior
-	AutoTrigger = true, -- Automatically start wall run when near wall
+	DetectionRange = 3.5,
+	MaxSlopeAngle = 0.3,
+	MinSpeed = 10,
+	Speed = 30,
+	Duration = 4.0,
+	GracePeriod = 0.3,
+	Cooldown = 0.5,
+	JumpOffForce = 60,
+	AutoTrigger = true,
 }
 -- ========================================
 -- DOUBLE JUMP SYSTEM
 -- ========================================
 MovementSettings.DoubleJump = {
 	Enabled = true,
-	Force = 50, -- Upward force for double jump
+	Force = 50,
+}
+-- ========================================
+-- WEDGE CLIMBING SYSTEM
+-- ========================================
+MovementSettings.WedgeClimb = {
+	-- Detection
+	DetectionRange = 4, -- How far to detect climbable surfaces
+	-- Physics
+	ClimbSpeed = 12, -- Upward climbing speed
+	-- Ledge Grab
+	LedgeGrabRange = 3, -- Range to detect ledge edges
+	LedgeHangOffset = 2, -- Distance from ledge while hanging
+	ClimbUpSpeed = 8, -- Speed when climbing over ledge
 }
 -- ========================================
 -- ANIMATIONS
@@ -81,8 +85,7 @@ MovementSettings.Animations = {
 	-- Wall running
 	WallRunLeft = "rbxassetid://93201209088043",
 	WallRunRight = "rbxassetid://78952764830119",
-
-	-- Ledge mechanics
+	-- Wedge climbing
 	LedgeHang = "rbxassetid://130912033735566",
 	LedgeClimb = "rbxassetid://126959978444547",
 }
