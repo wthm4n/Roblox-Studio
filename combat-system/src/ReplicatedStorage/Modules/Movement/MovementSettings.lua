@@ -19,7 +19,7 @@ MovementSettings.Player = {
 -- ========================================
 MovementSettings.Dash = {
 	Key = Enum.KeyCode.Q,
-	Speed = 95,
+	Speed = 70,
 	Duration = 0.25,
 	Cooldown = 1.0,
 }
@@ -72,7 +72,7 @@ MovementSettings.WedgeClimb = {
 -- ========================================
 MovementSettings.Animations = {
 	-- Basic movement
-	Idle = "rbxassetid://101974040609420",
+	Idle = "rbxassetid://133939959372694",
 	Walk = "rbxassetid://101695660356667",
 	Run = "rbxassetid://110745974890930",
 	-- Dashing
@@ -81,7 +81,7 @@ MovementSettings.Animations = {
 	DashS = "rbxassetid://115159060573717",
 	DashD = "rbxassetid://119390596531434",
 	-- Slide
-	Slide = "rbxassetid://101974040609420",
+	Slide = "rbxassetid://79166711928073",
 	-- Wall running
 	WallRunLeft = "rbxassetid://93201209088043",
 	WallRunRight = "rbxassetid://78952764830119",

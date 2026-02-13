@@ -485,74 +485,78 @@ local function DetectClimbable()
 	local ray = workspace:Raycast(rootPart.Position, forwardDir * SETTINGS.WedgeClimb.DetectionRange, params)
 
 	if ray and ray.Instance then
-		print("🔍 Hit part:", ray.Instance.Name, "Climbable:", ray.Instance:GetAttribute("Climbable"))
+		print(
+			"🔍 Hit part:",
+			ray.Instance.Name,
+			"Climbable:",
+			ray.Instance:GetAttribute("Climbable"),
+			"NormalY:",
+			ray.Normal.Y
+		)
 
-		-- Check if part has Climbable attribute
 		if ray.Instance:GetAttribute("Climbable") == true then
-			-- Check if it's a wedge or steep surface
-			
-				print("✅ Found climbable surface!")
+			-- NORMAL WALL CHECK
+			if math.abs(ray.Normal.Y) < 0.2 then
+				print("✅ Found vertical climbable wall!")
 				return ray.Instance
 			else
-				print("❌ Not a wedge or steep enough. Normal.Y:", ray.Normal.Y)
+				print("❌ Surface too flat. Normal.Y:", ray.Normal.Y)
 			end
-		else
-			print("❌ No Climbable attribute")
 		end
 	end
 
 	return nil
 end
 
-local function StartWedgeClimb(part)
-	if
-		state.wedgeClimb.active
-		or state.wallRun.active
-		or state.isDashing
-		or state.isSliding
-		or state.ledgeGrab.active
-	then
-		return
-	end
+-- local function StartWedgeClimb(part)
+-- 	if
+-- 		state.wedgeClimb.active
+-- 		or state.wallRun.active
+-- 		or state.isDashing
+-- 		or state.isSliding
+-- 		or state.ledgeGrab.active
+-- 	then
+-- 		return
+-- 	end
 
-	state.wedgeClimb.active = true
-	state.wedgeClimb.part = part
+-- 	state.wedgeClimb.active = true
+-- 	state.wedgeClimb.part = part
 
-	-- Create upward velocity for climbing
-	local bodyVel = Instance.new("BodyVelocity")
-	bodyVel.MaxForce = Vector3.new(100000, 100000, 100000)
-	bodyVel.Velocity = Vector3.new(0, SETTINGS.WedgeClimb.ClimbSpeed, 0)
-	bodyVel.Parent = rootPart
-	state.wedgeClimb.bodyVel = bodyVel
+-- 	-- Create upward velocity for climbing
+-- 	local bodyVel = Instance.new("BodyVelocity")
+-- 	bodyVel.MaxForce = Vector3.new(100000, 100000, 100000)
+-- 	bodyVel.Velocity = Vector3.new(0, SETTINGS.WedgeClimb.ClimbSpeed, 0)
+-- 	bodyVel.Parent = rootPart
+-- 	state.wedgeClimb.bodyVel = bodyVel
 
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
-	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+-- 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+-- 	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 
-	MovementEvent:FireServer("wedgeClimb", true)
-	print("🧗 Climbing wedge")
-end
+-- 	MovementEvent:FireServer("wedgeClimb", true)
+-- 	print("🧗 Climbing wedge")
+-- end
 
-local function EndWedgeClimb()
-	if not state.wedgeClimb.active then
-		return
-	end
+-- local function EndWedgeClimb()
+-- 	if not state.wedgeClimb.active then
+-- 		return
+-- 	end
 
-	state.wedgeClimb.active = false
+-- 	state.wedgeClimb.active = false
 
-	if state.wedgeClimb.bodyVel then
-		state.wedgeClimb.bodyVel:Destroy()
-		state.wedgeClimb.bodyVel = nil
-	end
+-- 	if state.wedgeClimb.bodyVel then
+-- 		state.wedgeClimb.bodyVel:Destroy()
+-- 		state.wedgeClimb.bodyVel = nil
+-- 	end
 
-	state.wedgeClimb.part = nil
+-- 	state.wedgeClimb.part = nil
 
-	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+-- 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+-- 	humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
 
-	MovementEvent:FireServer("wedgeClimb", false)
-	UpdateWalkSpeed()
-	print("🛑 Stopped climbing")
-end
+-- 	MovementEvent:FireServer("wedgeClimb", false)
+-- 	UpdateWalkSpeed()
+-- 	print("🛑 Stopped climbing")
+-- end
 
 -- ========================================
 -- LEDGE GRAB SYSTEM

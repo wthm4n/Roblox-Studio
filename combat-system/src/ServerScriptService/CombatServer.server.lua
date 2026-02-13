@@ -6,6 +6,7 @@
 	- Block breaking mechanic
 	- Hit reaction triggers
 	- M1-M5 combo
+	- BEAST MODE (2x damage multiplier)
 	
 	Author: Advanced Combat System
 ]]
@@ -46,6 +47,7 @@ local HitRequestEvent = CreateRemote("HitRequest", "RemoteEvent")
 local HitResultEvent = CreateRemote("HitResult", "RemoteEvent")
 local BlockEvent = CreateRemote("Block", "RemoteEvent")
 local BlockDamageEvent = CreateRemote("BlockDamage", "RemoteEvent")
+local BeastModeEvent = CreateRemote("BeastMode", "RemoteEvent")
 
 -- ========================================
 -- PLAYER DATA
@@ -59,6 +61,10 @@ local function InitializePlayerData(player: Player)
 		IsBlocking = false,
 		LastBlockTime = 0,
 		BlockHealth = CombatSettings.Block.MaxHealth,
+
+		-- Beast Mode
+		IsBeastMode = false,
+		BeastModeEndTime = 0,
 
 		-- Timing
 		LastHitRequestTime = 0,
@@ -120,14 +126,38 @@ function CombatService.IsHeavyAttack(player: Player, rootPart: BasePart): boolea
 	return false
 end
 
-function CombatService.CalculateDamage(combo: number, isHeavy: boolean, isFinisher: boolean): number
+function CombatService.CalculateDamage(
+	combo: number,
+	isHeavy: boolean,
+	isFinisher: boolean,
+	isBeastMode: boolean
+): number
+	local baseDamage
+
 	if isFinisher then
-		return CombatSettings.M1.FinisherDamage
+		baseDamage = CombatSettings.M1.FinisherDamage
 	elseif isHeavy then
-		return CombatSettings.M1.HeavyDamage
+		baseDamage = CombatSettings.M1.HeavyDamage
 	else
-		return CombatSettings.M1.BaseDamage
+		baseDamage = CombatSettings.M1.BaseDamage
 	end
+
+	-- Apply beast mode multiplier
+	if isBeastMode then
+		baseDamage = baseDamage * CombatSettings.BeastMode.DamageMultiplier
+
+		if CombatSettings.Debug.LogBeastMode then
+			print(
+				string.format(
+					"🔥 Beast Mode damage: %.1f (x%.1f multiplier)",
+					baseDamage,
+					CombatSettings.BeastMode.DamageMultiplier
+				)
+			)
+		end
+	end
+
+	return baseDamage
 end
 
 function CombatService.CalculateKnockback(combo: number, isHeavy: boolean, isFinisher: boolean)
@@ -223,106 +253,116 @@ end
 -- HIT REQUEST HANDLER
 -- ========================================
 
-HitRequestEvent.OnServerEvent:Connect(function(player: Player, combo: number, cameraLookVector: Vector3?)
-	if not CombatUtilities.ValidatePlayer(player) then
-		return
-	end
-
-	local data = GetPlayerData(player)
-	if not data then
-		return
-	end
-
-	local character = player.Character
-	local charValid, err, humanoid, rootPart = CombatUtilities.ValidateCharacter(character)
-	if not charValid then
-		return
-	end
-
-	-- Rate limit
-	if not data.RateLimiter.Check(player.UserId) then
-		warn(player.Name .. " attacking too fast!")
-		return
-	end
-
-	-- Cooldown check
-	local currentTime = tick()
-	if currentTime - data.LastHitRequestTime < CombatSettings.M1.HitRequestCooldown then
-		return
-	end
-	data.LastHitRequestTime = currentTime
-
-	-- Validate combo (1-5)
-	if not combo or combo < 1 or combo > CombatSettings.M1.MaxCombo then
-		warn(player.Name .. " sent invalid combo: " .. tostring(combo))
-		return
-	end
-
-	if data.IsBlocking then
-		return
-	end
-
-	-- Determine attack type
-	local isFinisher = combo == CombatSettings.M1.MaxCombo
-	local isHeavy = CombatService.IsHeavyAttack(player, rootPart)
-
-	local range = CombatSettings.M1.HitboxRange
-	local angle = CombatSettings.M1.HitboxAngle
-
-	-- Get targets
-	local targets = CombatUtilities.GetTargetsInHitbox(character, range, angle, cameraLookVector, false)
-
-	local maxTargets = CombatSettings.M1.MaxTargetsPerHit
-
-	for i = 1, math.min(#targets, maxTargets) do
-		local target = targets[i]
-
-		local damage = CombatService.CalculateDamage(combo, isHeavy, isFinisher)
-		local knockbackH, knockbackV = CombatService.CalculateKnockback(combo, isHeavy, isFinisher)
-
-		local success, wasBlocked, wasPerfectBlock, blockBroken =
-			CombatService.ApplyDamage(player, target, damage, knockbackH, knockbackV, rootPart, combo)
-
-		-- Apply finisher stun (if not blocked and not already stunned from block break)
-		if isFinisher and success and not wasBlocked and not blockBroken then
-			CombatUtilities.ApplyStun(target.Humanoid, CombatSettings.M1.FinisherStunDuration)
+HitRequestEvent.OnServerEvent:Connect(
+	function(player: Player, combo: number, cameraLookVector: Vector3?, isBeastMode: boolean?)
+		if not CombatUtilities.ValidatePlayer(player) then
+			return
 		end
 
-		if success then
-			local hitData = {
-				targetChar = target.Character,
-				damage = damage,
-				combo = combo,
-				isHeavy = isHeavy,
-				isFinisher = isFinisher,
-				wasBlocked = wasBlocked,
-				wasPerfectBlock = wasPerfectBlock,
-				blockBroken = blockBroken,
-			}
+		local data = GetPlayerData(player)
+		if not data then
+			return
+		end
 
-			-- Send to attacker
-			HitResultEvent:FireClient(player, hitData)
+		local character = player.Character
+		local charValid, err, humanoid, rootPart = CombatUtilities.ValidateCharacter(character)
+		if not charValid then
+			return
+		end
 
-			-- Send to target
-			local targetPlayer = Players:GetPlayerFromCharacter(target.Character)
-			if targetPlayer then
-				HitResultEvent:FireClient(targetPlayer, hitData)
+		-- Rate limit
+		if not data.RateLimiter.Check(player.UserId) then
+			warn(player.Name .. " attacking too fast!")
+			return
+		end
+
+		-- Cooldown check
+		local currentTime = tick()
+		if currentTime - data.LastHitRequestTime < CombatSettings.M1.HitRequestCooldown then
+			return
+		end
+		data.LastHitRequestTime = currentTime
+
+		-- Validate combo (1-5)
+		if not combo or combo < 1 or combo > CombatSettings.M1.MaxCombo then
+			warn(player.Name .. " sent invalid combo: " .. tostring(combo))
+			return
+		end
+
+		if data.IsBlocking then
+			return
+		end
+
+		-- Verify beast mode state (server-side validation)
+		local actualBeastMode = data.IsBeastMode and (tick() < data.BeastModeEndTime)
+		if isBeastMode and not actualBeastMode then
+			warn(player.Name .. " claimed beast mode but it's not active!")
+			isBeastMode = false
+		end
+
+		-- Determine attack type
+		local isFinisher = combo == CombatSettings.M1.MaxCombo
+		local isHeavy = CombatService.IsHeavyAttack(player, rootPart)
+
+		local range = CombatSettings.M1.HitboxRange
+		local angle = CombatSettings.M1.HitboxAngle
+
+		-- Get targets
+		local targets = CombatUtilities.GetTargetsInHitbox(character, range, angle, cameraLookVector, false)
+
+		local maxTargets = CombatSettings.M1.MaxTargetsPerHit
+
+		for i = 1, math.min(#targets, maxTargets) do
+			local target = targets[i]
+
+			local damage = CombatService.CalculateDamage(combo, isHeavy, isFinisher, actualBeastMode)
+			local knockbackH, knockbackV = CombatService.CalculateKnockback(combo, isHeavy, isFinisher)
+
+			local success, wasBlocked, wasPerfectBlock, blockBroken =
+				CombatService.ApplyDamage(player, target, damage, knockbackH, knockbackV, rootPart, combo)
+
+			-- Apply finisher stun (if not blocked and not already stunned from block break)
+			if isFinisher and success and not wasBlocked and not blockBroken then
+				CombatUtilities.ApplyStun(target.Humanoid, CombatSettings.M1.FinisherStunDuration)
 			end
 
-			-- Send to spectators
-			for _, otherPlayer in Players:GetPlayers() do
-				if otherPlayer ~= player and otherPlayer ~= targetPlayer then
-					if otherPlayer.Character then
-						local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
-						if otherRoot and (otherRoot.Position - target.RootPart.Position).Magnitude < 100 then
-							HitResultEvent:FireClient(otherPlayer, hitData)
+			if success then
+				local hitData = {
+					targetChar = target.Character,
+					damage = damage,
+					combo = combo,
+					isHeavy = isHeavy,
+					isFinisher = isFinisher,
+					wasBlocked = wasBlocked,
+					wasPerfectBlock = wasPerfectBlock,
+					blockBroken = blockBroken,
+					isBeastMode = actualBeastMode, -- Include beast mode in hit data
+				}
+
+				-- Send to attacker
+				HitResultEvent:FireClient(player, hitData)
+
+				-- Send to target
+				local targetPlayer = Players:GetPlayerFromCharacter(target.Character)
+				if targetPlayer then
+					HitResultEvent:FireClient(targetPlayer, hitData)
+				end
+
+				-- Send to spectators
+				for _, otherPlayer in Players:GetPlayers() do
+					if otherPlayer ~= player and otherPlayer ~= targetPlayer then
+						if otherPlayer.Character then
+							local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+							if otherRoot and (otherRoot.Position - target.RootPart.Position).Magnitude < 100 then
+								HitResultEvent:FireClient(otherPlayer, hitData)
+							end
 						end
 					end
 				end
 			end
 		end
 	end
-end)
+)
 
 -- ========================================
 -- BLOCKING HANDLER
@@ -340,6 +380,35 @@ BlockEvent.OnServerEvent:Connect(function(player: Player, isBlocking: boolean)
 		data.LastBlockTime = tick()
 		-- Reset block health when starting to block
 		data.BlockHealth = CombatSettings.Block.MaxHealth
+	end
+end)
+
+-- ========================================
+-- BEAST MODE HANDLER
+-- ========================================
+
+BeastModeEvent.OnServerEvent:Connect(function(player: Player, isActivating: boolean)
+	local data = GetPlayerData(player)
+	if not data then
+		return
+	end
+
+	if isActivating then
+		-- Activate beast mode
+		data.IsBeastMode = true
+		data.BeastModeEndTime = tick() + CombatSettings.BeastMode.Duration
+
+		if CombatSettings.Debug.LogBeastMode then
+			print(player.Name .. " activated BEAST MODE for " .. CombatSettings.BeastMode.Duration .. "s")
+		end
+	else
+		-- Deactivate beast mode
+		data.IsBeastMode = false
+		data.BeastModeEndTime = 0
+
+		if CombatSettings.Debug.LogBeastMode then
+			print(player.Name .. " beast mode ended")
+		end
 	end
 end)
 
@@ -364,6 +433,8 @@ local function OnPlayerAdded(player: Player)
 			data.IsBlocking = false
 			data.BlockHealth = CombatSettings.Block.MaxHealth
 			data.LastHitRequestTime = 0
+			data.IsBeastMode = false
+			data.BeastModeEndTime = 0
 		end
 	end)
 end
@@ -375,4 +446,4 @@ for _, player in Players:GetPlayers() do
 	task.spawn(OnPlayerAdded, player)
 end
 
-print("✅ AdvancedCombatServer initialized")
+print("✅ AdvancedCombatServer initialized (with Beast Mode)")

@@ -6,6 +6,8 @@
 	- Block system with durability
 	- Hit reactions (blocking and normal)
 	- Block breaking
+	- BEAST MODE (10s damage boost)
+	- Debug hitbox visualizer
 ]]
 
 local CombatSettings = {}
@@ -25,7 +27,7 @@ CombatSettings.Player = {
 -- M1-M5 COMBAT SYSTEM
 -- ========================================
 CombatSettings.M1 = {
-	-- Damage values
+	-- Damage values (NORMAL MODE)
 	BaseDamage = 8,
 	HeavyDamage = 15,
 	FinisherDamage = 25,
@@ -46,7 +48,7 @@ CombatSettings.M1 = {
 	HitRequestCooldown = 0.15,
 
 	-- SPATIAL HITBOX
-	HitboxRange = 12,
+	HitboxRange = 5,
 	HitboxAngle = 75,
 	MaxTargetsPerHit = 5,
 
@@ -60,6 +62,42 @@ CombatSettings.M1 = {
 
 	-- Stun
 	FinisherStunDuration = 1.0,
+}
+
+-- ========================================
+-- BEAST MODE SYSTEM
+-- ========================================
+CombatSettings.BeastMode = {
+	-- Activation
+	ActivationKey = Enum.KeyCode.G, -- Press G to activate
+	ActivationAnimation = "rbxassetid://136605012097315", -- Animation played before activation
+
+	-- Duration
+	Duration = 10, -- 10 seconds
+	Cooldown = 3, -- 3 second cooldown after it ends
+
+	-- Damage multipliers
+	DamageMultiplier = 2.0, -- 2x damage
+
+	-- Visual effects during beast mode
+	ArmAuraEnabled = true, -- Constant arm aura VFX only
+}
+
+-- ========================================
+-- DEBUG SETTINGS
+-- ========================================
+CombatSettings.Debug = {
+	-- Hitbox Visualizer
+	ShowHitbox = false, -- Set to true to see hitbox sphere
+	HitboxColor = Color3.fromRGB(255, 0, 0), -- Red sphere
+	HitboxTransparency = 0.7,
+
+	ShowTargets = false, -- Show detected targets with markers
+	TargetMarkerColor = Color3.fromRGB(0, 255, 0), -- Green markers
+
+	-- Console logging
+	LogHits = false,
+	LogBeastMode = true,
 }
 
 -- ========================================
@@ -142,7 +180,7 @@ CombatSettings.Animations = {
 	},
 
 	-- Blocking
-	Block = "rbxassetid://74809674784324",
+	Block = "rbxassetid://133189311751347",
 	BlockingHitReaction1 = "rbxassetid://74809674784324",
 	BlockingHitReaction2 = "rbxassetid://139217606379358",
 	BlockingHitReaction3 = "rbxassetid://131983705093197",
@@ -173,8 +211,12 @@ CombatSettings.Audio = {
 	BlockHit = "rbxassetid://137630794322989",
 	BlockBreak = "rbxassetid://137630794322989",
 
+	-- Beast Mode (PUT YOUR SOUND ID HERE)
+	BeastModeActivate = "rbxassetid://133092149239445", -- Sound when activating
+	BeastModeDeactivate = "rbxassetid://137630794322989", -- When it ends
+
 	Volume = 0.5,
-	HitVolume = 1.0,
+	HitVolume = 5.0,
 }
 
 -- ========================================
