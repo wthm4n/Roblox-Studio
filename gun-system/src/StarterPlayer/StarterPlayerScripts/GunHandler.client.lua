@@ -296,7 +296,7 @@ local function createCrosshair()
 	-- Create crosshair image (ANIMATED)
 	CrosshairImage = Instance.new("ImageLabel")
 	CrosshairImage.Name = "CrosshairImage"
-	CrosshairImage.Size = UDim2.new(0, 20, 0, 20)
+	CrosshairImage.Size = UDim2.new(0, 40, 0, 40)
 	CrosshairImage.Position = UDim2.new(0.5, -20, 0.5, -20)
 	CrosshairImage.AnchorPoint = Vector2.new(0.5, 0.5)
 	CrosshairImage.BackgroundTransparency = 1
@@ -304,20 +304,26 @@ local function createCrosshair()
 	CrosshairImage.ImageColor3 = Color3.new(1, 1, 1)
 	CrosshairImage.Parent = Container
 
-	-- Create status text below crosshair
-	CrosshairStatus = Instance.new("TextLabel")
-	CrosshairStatus.Name = "StatusLabel"
-	CrosshairStatus.Size = UDim2.new(0, 200, 0, 30)
-	CrosshairStatus.Position = UDim2.new(0.5, -100, 0.5, 40)
-	CrosshairStatus.BackgroundTransparency = 1
-	CrosshairStatus.Font = Enum.Font.GothamBold
-	CrosshairStatus.TextSize = 16
-	CrosshairStatus.TextColor3 = Color3.new(1, 1, 1)
-	CrosshairStatus.Text = ""
-	CrosshairStatus.TextStrokeTransparency = 0.5
-	CrosshairStatus.Parent = Container
-
 	print("🎯 Crosshair Created")
+end
+
+-- Get status label from gun's SurfaceGui
+local function getStatusLabel()
+	if not EquippedTool then
+		return nil
+	end
+
+	local guiPart = EquippedTool:FindFirstChild("GuiPart")
+	if not guiPart then
+		return nil
+	end
+
+	local surfaceGui = guiPart:FindFirstChild("StatusGUI")
+	if not surfaceGui then
+		return nil
+	end
+
+	return surfaceGui:FindFirstChild("StatusLabel")
 end
 
 -- FIXED: Destroy crosshair when gun unequipped
@@ -333,7 +339,10 @@ end
 
 -- Update crosshair status
 local function updateCrosshairStatus(status)
-	if not CrosshairImage or not CrosshairStatus then
+	-- Get the status label from the gun's SurfaceGui
+	CrosshairStatus = getStatusLabel()
+
+	if not CrosshairImage then
 		return
 	end
 
