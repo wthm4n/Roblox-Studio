@@ -28,15 +28,15 @@ local PistolConfig = {
 	GunImage = "rbxassetid://123456789", -- Replace with your pistol image ID
 
 	-- Damage Settings
-	BaseDamage = 50,
+	BaseDamage = 10,
 	HeadshotMultiplier = 3.0,
 	DamageFalloffStart = 75, -- studs where damage falloff begins
 	DamageFalloffEnd = 200, -- studs where damage reaches minimum
-	MinDamage = 20, -- minimum damage at max range
+	MinDamage = 5, -- minimum damage at max range
 
 	-- Fire Rate & Mode
 	FireRate = 250, -- Rounds Per Minute (RPM) - Semi-auto pistol
-	FireMode = "Auto", -- "Auto", "Semi", "Burst"
+	FireMode = "Semi", -- "Auto", "Semi", "Burst"
 	BurstCount = 3,
 	BurstDelay = 0.1,
 
@@ -70,11 +70,11 @@ local PistolConfig = {
 
 	-- Animation IDs (replace with your animation IDs)
 	Animations = {
-		Idle = 0, -- idle animation ID
+		Idle = 115284468970500, -- idle animation ID
 		Walk = 0, -- walking animation ID
-		Fire = 137676269669673, -- fire animation ID
-		ReloadTactical = 120257644576672, -- tactical reload (bullet in chamber)
-		ReloadEmpty = 120257644576672, -- empty reload animation
+		Fire = 129841784532184, -- fire animation ID
+		ReloadTactical = 77706176424948, -- tactical reload (bullet in chamber)
+		ReloadEmpty = 77706176424948, -- empty reload animation
 	},
 
 	-- Assets (Sounds & VFX) - Will be loaded from ReplicatedStorage > Assets > [GunName]
