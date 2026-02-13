@@ -1,13 +1,19 @@
 --[[
-	Gun Client Handler - IMPROVED CAMERA RECOIL
+	Gun Client Handler - AAA REALISTIC CAMERA + CHARACTER ROTATION
 	Place in StarterPlayer > StarterPlayerScripts
 	
+	IMPROVEMENTS:
+	✅ Character body rotates to face where you're aiming (like PUBG, Fortnite)
+	✅ Enhanced AAA-style camera shake with Perlin noise
+	✅ Smooth character turning with interpolation
+	
 	Handles all client-side effects:
+	- Character rotation toward mouse
 	- Muzzle flash
 	- Bullet tracers
 	- Hit effects
 	- Shell ejection
-	- REALISTIC CAMERA RECOIL (kicks UP, recovers DOWN)
+	- REALISTIC CAMERA SHAKE & RECOIL
 	- Sounds
 	- Animations
 	- UI updates
@@ -35,6 +41,8 @@ local function debugLog(category, ...)
 		["CONFIG"] = "⚙️",
 		["FIRE"] = "🔫",
 		["RECOIL"] = "↕️",
+		["SHAKE"] = "📳",
+		["ROTATION"] = "🔄",
 	}
 
 	print(string.format("[GUN DEBUG] %s [%s]", prefix[category] or "📌", category), ...)
@@ -49,6 +57,7 @@ local TweenService = game:GetService("TweenService")
 local Player = Players.LocalPlayer
 local Character = Player.Character or Player.CharacterAdded:Wait()
 local Humanoid = Character:WaitForChild("Humanoid")
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 local Camera = workspace.CurrentCamera
 
 -- Get remotes
@@ -84,11 +93,71 @@ local AnimationTracks = {
 	ReloadEmpty = nil,
 }
 
--- Camera recoil - IMPROVED SYSTEM
-local RecoilOffset = Vector2.new(0, 0) -- Current recoil offset
+-- ═══════════════════════════════════════════════════════════
+--  AAA CAMERA RECOIL & SHAKE SYSTEM
+-- ═══════════════════════════════════════════════════════════
+
+-- Camera recoil - AAA REALISTIC SYSTEM
+local RecoilOffset = Vector2.new(0, 0) -- Current recoil offset (pitch, yaw)
 local RecoilVelocity = Vector2.new(0, 0) -- Recoil velocity for snappier feel
 local RecoilRecoverySpeed = 8 -- How fast recoil recovers (lower = slower)
 local RecoilSnappiness = 0.3 -- How snappy the initial kick is (0-1, higher = snappier)
+
+-- Enhanced Camera shake system with Perlin noise
+local CameraShake = {
+	-- Shake intensity
+	Intensity = 0,
+	Decay = 15, -- How fast shake decays
+
+	-- Perlin noise parameters for natural shake
+	NoiseOffsetX = 0,
+	NoiseOffsetY = 0,
+	NoiseOffsetZ = 0,
+	NoiseSpeed = 35, -- How fast the noise moves (higher = more erratic)
+
+	-- Shake amplitude multipliers
+	PitchMultiplier = 1.2, -- Up/down shake
+	YawMultiplier = 0.8, -- Left/right shake
+	RollMultiplier = 0.4, -- Tilt shake (subtle)
+
+	-- Random impulses for variety
+	RandomImpulse = Vector3.new(0, 0, 0),
+	ImpulseDecay = 20,
+}
+
+-- Character rotation settings
+local RotateToMouse = true -- Should character rotate to face mouse
+local RotationSpeed = 12 -- How fast character rotates (higher = faster)
+local RotationSmoothness = 0.25 -- Smoothing factor (0-1, lower = smoother)
+
+-- Enhanced Perlin-like noise with multiple octaves
+local function perlinNoise(x)
+	local function noise(x)
+		local x0 = math.floor(x)
+		local x1 = x0 + 1
+		local sx = x - x0
+
+		-- Smooth interpolation
+		sx = sx * sx * (3 - 2 * sx)
+
+		-- Random hash function
+		local function hash(n)
+			n = math.sin(n) * 43758.5453123
+			return n - math.floor(n)
+		end
+
+		return hash(x0) * (1 - sx) + hash(x1) * sx
+	end
+
+	-- Multiple octaves for natural movement
+	local result = 0
+	result = result + noise(x) * 1.0
+	result = result + noise(x * 2.1) * 0.5
+	result = result + noise(x * 4.3) * 0.25
+	result = result + noise(x * 8.7) * 0.125
+
+	return result
+end
 
 -- Sounds (loaded from gun config)
 local Sounds = {
@@ -146,50 +215,28 @@ local function loadSound(soundSource, gunName)
 				local clonedSound = sound:Clone()
 				clonedSound.Parent = Camera
 				debugLog("SUCCESS", "Loaded sound from:", gunName .. "/" .. soundSource)
-				debugLog("INFO", "  └─ SoundId:", clonedSound.SoundId)
-				debugLog("INFO", "  └─ Volume:", clonedSound.Volume)
-				debugLog("INFO", "  └─ Path: Assets/" .. gunName .. "/" .. soundSource)
 				return clonedSound
-			else
-				debugLog("INFO", "Sound not found in gun folder, checking VFX subfolder...")
 			end
 
-			-- Try in VFX subfolder (for structure: Pistol/VFX/Sound)
+			-- Try in VFX subfolder
 			local vfxFolder = gunFolder:FindFirstChild("VFX")
 			if vfxFolder then
-				debugLog("INFO", "Found VFX subfolder")
 				sound = vfxFolder:FindFirstChild(soundSource)
 				if sound and sound:IsA("Sound") then
 					local clonedSound = sound:Clone()
 					clonedSound.Parent = Camera
 					debugLog("SUCCESS", "Loaded sound from:", gunName .. "/VFX/" .. soundSource)
-					debugLog("INFO", "  └─ SoundId:", clonedSound.SoundId)
-					debugLog("INFO", "  └─ Volume:", clonedSound.Volume)
-					debugLog("INFO", "  └─ Path: Assets/" .. gunName .. "/VFX/" .. soundSource)
 					return clonedSound
-				else
-					debugLog("WARNING", "Sound not found in VFX folder")
 				end
-			else
-				debugLog("INFO", "No VFX subfolder found in gun folder")
-			end
-		else
-			debugLog("WARNING", "Gun folder not found:", gunName)
-			debugLog("INFO", "Available folders in Assets:")
-			for _, child in ipairs(AssetsFolder:GetChildren()) do
-				debugLog("INFO", "  └─", child.Name, "(" .. child.ClassName .. ")")
 			end
 		end
 
-		-- Try direct path from Assets folder (recursive search)
-		debugLog("INFO", "Attempting recursive search for:", soundSource)
+		-- Try direct path (recursive search)
 		local sound = AssetsFolder:FindFirstChild(soundSource, true)
 		if sound and sound:IsA("Sound") then
 			local clonedSound = sound:Clone()
 			clonedSound.Parent = Camera
 			debugLog("SUCCESS", "Found sound via recursive search")
-			debugLog("INFO", "  └─ Full path:", sound:GetFullName())
-			debugLog("INFO", "  └─ SoundId:", clonedSound.SoundId)
 			return clonedSound
 		end
 
@@ -201,86 +248,35 @@ end
 
 -- Load VFX asset (ParticleEmitter, Beam, etc)
 local function loadVFXAsset(assetSource, gunName)
-	debugLog("VFX", "Attempting to load VFX:", assetSource, "for gun:", gunName)
-
 	if not assetSource then
-		debugLog("INFO", "VFX source is nil (will use default)")
 		return nil
 	end
 
-	-- If it's already an instance, return it
 	if typeof(assetSource) == "Instance" then
-		debugLog("SUCCESS", "Using direct VFX instance:", assetSource.Name, "(" .. assetSource.ClassName .. ")")
 		return assetSource
 	end
 
-	-- If it's a string path, try to load from Assets folder
 	if typeof(assetSource) == "string" then
-		debugLog("LOAD", "Searching for VFX asset:", assetSource)
-
 		local gunFolder = AssetsFolder:FindFirstChild(gunName)
 		if gunFolder then
-			debugLog("INFO", "Found gun folder:", gunName)
-
-			-- Try direct in gun folder
 			local asset = gunFolder:FindFirstChild(assetSource)
 			if asset then
-				debugLog("SUCCESS", "Loaded VFX from:", gunName .. "/" .. assetSource)
-				debugLog("INFO", "  └─ Type:", asset.ClassName)
-				debugLog("INFO", "  └─ Path: Assets/" .. gunName .. "/" .. assetSource)
-				if asset:IsA("Folder") then
-					debugLog("INFO", "  └─ Children:")
-					for _, child in ipairs(asset:GetChildren()) do
-						debugLog("INFO", "      └─", child.Name, "(" .. child.ClassName .. ")")
-					end
-				end
 				return asset
-			else
-				debugLog("INFO", "VFX not found in gun folder, checking VFX subfolder...")
 			end
 
-			-- Try in VFX subfolder (for structure: Pistol/VFX/MuzzleFlash)
 			local vfxFolder = gunFolder:FindFirstChild("VFX")
 			if vfxFolder then
-				debugLog("INFO", "Found VFX subfolder")
 				asset = vfxFolder:FindFirstChild(assetSource)
 				if asset then
-					debugLog("SUCCESS", "Loaded VFX from:", gunName .. "/VFX/" .. assetSource)
-					debugLog("INFO", "  └─ Type:", asset.ClassName)
-					debugLog("INFO", "  └─ Path: Assets/" .. gunName .. "/VFX/" .. assetSource)
-					if asset:IsA("Folder") then
-						debugLog("INFO", "  └─ Children:")
-						for _, child in ipairs(asset:GetChildren()) do
-							debugLog("INFO", "      └─", child.Name, "(" .. child.ClassName .. ")")
-						end
-					end
 					return asset
-				else
-					debugLog("WARNING", "VFX not found in VFX folder")
-					debugLog("INFO", "Available assets in VFX folder:")
-					for _, child in ipairs(vfxFolder:GetChildren()) do
-						debugLog("INFO", "  └─", child.Name, "(" .. child.ClassName .. ")")
-					end
 				end
-			else
-				debugLog("INFO", "No VFX subfolder found in gun folder")
 			end
-		else
-			debugLog("WARNING", "Gun folder not found:", gunName)
 		end
 
-		-- Try direct path (recursive search)
-		debugLog("INFO", "Attempting recursive search for:", assetSource)
 		local asset = AssetsFolder:FindFirstChild(assetSource, true)
 		if asset then
-			debugLog("SUCCESS", "Found VFX via recursive search")
-			debugLog("INFO", "  └─ Full path:", asset:GetFullName())
-			debugLog("INFO", "  └─ Type:", asset.ClassName)
 			return asset
 		end
-
-		debugLog("ERROR", "VFX asset not found anywhere:", assetSource)
-		debugLog("INFO", "Will use default VFX instead")
 	end
 
 	return nil
@@ -311,21 +307,6 @@ local function getHitColor(material)
 	return materialColors[material] or Color3.fromRGB(200, 200, 200)
 end
 
--- Get hit particle based on material
-local function getHitParticle(material)
-	if material == Enum.Material.Grass or material == Enum.Material.LeafyGrass then
-		return "Smoke"
-	elseif material == Enum.Material.Wood or material == Enum.Material.WoodPlanks then
-		return "Smoke"
-	elseif material == Enum.Material.Metal or material == Enum.Material.CorrodedMetal then
-		return "Sparkles"
-	elseif material == Enum.Material.Glass then
-		return "Shatter"
-	else
-		return "Smoke"
-	end
-end
-
 -- ═══════════════════════════════════════════════════════════
 --  VISUAL EFFECTS
 -- ═══════════════════════════════════════════════════════════
@@ -336,38 +317,31 @@ local function createMuzzleFlash(muzzlePart)
 		return
 	end
 
-	-- Check if custom muzzle flash asset is provided
 	if VFXAssets.MuzzleFlash then
 		local customFlash = VFXAssets.MuzzleFlash
 
-		-- If it's a ParticleEmitter, clone and emit
 		if customFlash:IsA("ParticleEmitter") then
 			local particle = customFlash:Clone()
 			particle.Parent = muzzlePart
 			particle:Emit(particle:GetAttribute("EmitCount") or 5)
-
 			task.delay(1, function()
 				particle:Destroy()
 			end)
-
 			return
 		end
 
-		-- If it's a folder with multiple effects, clone all children
 		if customFlash:IsA("Folder") or customFlash:IsA("Model") then
 			for _, child in ipairs(customFlash:GetChildren()) do
 				if child:IsA("ParticleEmitter") then
 					local particle = child:Clone()
 					particle.Parent = muzzlePart
 					particle:Emit(particle:GetAttribute("EmitCount") or 5)
-
 					task.delay(1, function()
 						particle:Destroy()
 					end)
 				elseif child:IsA("PointLight") then
 					local light = child:Clone()
 					light.Parent = muzzlePart
-
 					task.delay(0.1, function()
 						light:Destroy()
 					end)
@@ -377,8 +351,7 @@ local function createMuzzleFlash(muzzlePart)
 		end
 	end
 
-	-- Default muzzle flash (if no custom asset)
-	-- Particle emitter for muzzle flash
+	-- Default muzzle flash
 	local particle = Instance.new("ParticleEmitter")
 	particle.Texture = "rbxasset://textures/particles/smoke_main.dds"
 	particle.Color = ColorSequence.new(Color3.new(1, 0.8, 0.3))
@@ -390,7 +363,6 @@ local function createMuzzleFlash(muzzlePart)
 	particle.Enabled = false
 	particle.Parent = muzzlePart
 
-	-- Point light for muzzle flash
 	local light = Instance.new("PointLight")
 	light.Brightness = 5
 	light.Color = Color3.new(1, 0.8, 0.3)
@@ -398,10 +370,8 @@ local function createMuzzleFlash(muzzlePart)
 	light.Shadows = true
 	light.Parent = muzzlePart
 
-	-- Emit particles
 	particle:Emit(5)
 
-	-- Flash light
 	task.spawn(function()
 		task.wait(0.05)
 		light.Enabled = false
@@ -413,10 +383,6 @@ end
 
 -- Create bullet tracer
 local function createBulletTracer(startPos, endPos)
-	local distance = (endPos - startPos).Magnitude
-	local direction = (endPos - startPos).Unit
-
-	-- Create beam
 	local attachment0 = Instance.new("Attachment")
 	local attachment1 = Instance.new("Attachment")
 
@@ -450,17 +416,14 @@ local function createBulletTracer(startPos, endPos)
 	beam.Transparency = NumberSequence.new(1, 1)
 	beam.Parent = tracerPart
 
-	-- Fade out and destroy
 	task.spawn(function()
 		task.wait(0.1)
-
 		local fadeTime = 0.1
 		local steps = 10
 		for i = 1, steps do
 			beam.Transparency = NumberSequence.new(0.3 + (0.7 * i / steps))
 			task.wait(fadeTime / steps)
 		end
-
 		tracerPart:Destroy()
 		endPart:Destroy()
 	end)
@@ -468,7 +431,6 @@ end
 
 -- Create hit effect
 local function createHitEffect(position, normal, material, isHeadshot)
-	-- Hit marker part
 	local hitPart = Instance.new("Part")
 	hitPart.Anchored = true
 	hitPart.CanCollide = false
@@ -477,7 +439,6 @@ local function createHitEffect(position, normal, material, isHeadshot)
 	hitPart.CFrame = CFrame.new(position, position + normal)
 	hitPart.Parent = workspace
 
-	-- Particle effect based on material
 	local particle = Instance.new("ParticleEmitter")
 	particle.Texture = "rbxasset://textures/particles/smoke_main.dds"
 	particle.Color = ColorSequence.new(getHitColor(material))
@@ -488,10 +449,8 @@ local function createHitEffect(position, normal, material, isHeadshot)
 	particle.SpreadAngle = Vector2.new(30, 30)
 	particle.Enabled = false
 	particle.Parent = hitPart
-
 	particle:Emit(15)
 
-	-- Add sparkles for metal
 	if material == Enum.Material.Metal or material == Enum.Material.CorrodedMetal then
 		local sparkles = Instance.new("ParticleEmitter")
 		sparkles.Texture = "rbxasset://textures/particles/sparkles_main.dds"
@@ -506,7 +465,6 @@ local function createHitEffect(position, normal, material, isHeadshot)
 		sparkles:Emit(10)
 	end
 
-	-- Headshot effect
 	if isHeadshot then
 		local headshotParticle = Instance.new("ParticleEmitter")
 		headshotParticle.Texture = "rbxasset://textures/particles/smoke_main.dds"
@@ -520,7 +478,6 @@ local function createHitEffect(position, normal, material, isHeadshot)
 		headshotParticle:Emit(20)
 	end
 
-	-- Clean up
 	task.delay(2, function()
 		hitPart:Destroy()
 	end)
@@ -534,23 +491,18 @@ local function createShellEjection(ejectionPort)
 
 	local shell
 
-	-- Check if custom shell casing is provided
 	if VFXAssets.ShellCasing then
 		local customShell = VFXAssets.ShellCasing
-
-		-- Clone the custom shell
 		if customShell:IsA("BasePart") or customShell:IsA("MeshPart") then
 			shell = customShell:Clone()
 		elseif customShell:IsA("Model") then
 			shell = customShell:Clone()
-			-- Set up the primary part for models
 			if not shell.PrimaryPart then
 				shell.PrimaryPart = shell:FindFirstChildWhichIsA("BasePart")
 			end
 		end
 	end
 
-	-- Create default shell if no custom one
 	if not shell then
 		shell = Instance.new("Part")
 		shell.Size = Vector3.new(0.1, 0.3, 0.1)
@@ -558,7 +510,6 @@ local function createShellEjection(ejectionPort)
 		shell.Color = Color3.fromRGB(200, 180, 100)
 	end
 
-	-- Position shell at ejection port
 	if shell:IsA("Model") and shell.PrimaryPart then
 		shell:SetPrimaryPartCFrame(ejectionPort.CFrame * CFrame.new(0.3, 0, 0) * CFrame.Angles(math.rad(90), 0, 0))
 	elseif shell:IsA("BasePart") then
@@ -568,11 +519,9 @@ local function createShellEjection(ejectionPort)
 
 	shell.Parent = workspace
 
-	-- Get the main part for physics (Model or BasePart)
 	local physicsPart = shell:IsA("Model") and shell.PrimaryPart or shell
 
 	if physicsPart then
-		-- Add velocity
 		local bodyVelocity = Instance.new("BodyVelocity")
 		bodyVelocity.Velocity = (ejectionPort.CFrame.RightVector * 15)
 			+ (ejectionPort.CFrame.UpVector * 5)
@@ -580,14 +529,12 @@ local function createShellEjection(ejectionPort)
 		bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
 		bodyVelocity.Parent = physicsPart
 
-		-- Add spin
 		local bodyAngularVelocity = Instance.new("BodyAngularVelocity")
 		bodyAngularVelocity.AngularVelocity =
 			Vector3.new(math.random(-50, 50), math.random(-50, 50), math.random(-50, 50))
 		bodyAngularVelocity.MaxTorque = Vector3.new(500, 500, 500)
 		bodyAngularVelocity.Parent = physicsPart
 
-		-- Remove forces after a bit
 		task.delay(0.1, function()
 			if bodyVelocity then
 				bodyVelocity:Destroy()
@@ -598,43 +545,18 @@ local function createShellEjection(ejectionPort)
 		end)
 	end
 
-	-- Play shell eject sound if available
 	if Sounds.ShellEject then
 		Sounds.ShellEject:Play()
 	end
 
-	-- Clean up shell after some time
 	game:GetService("Debris"):AddItem(shell, 5)
 end
 
--- Camera shake
-local function cameraShake(intensity)
-	local shakeDuration = 0.1
-	local shakeAmount = intensity or 0.5
-
-	task.spawn(function()
-		local startTime = tick()
-		while tick() - startTime < shakeDuration do
-			local progress = (tick() - startTime) / shakeDuration
-			local currentShake = shakeAmount * (1 - progress)
-
-			Camera.CFrame = Camera.CFrame
-				* CFrame.Angles(
-					math.rad(math.random(-currentShake, currentShake)),
-					math.rad(math.random(-currentShake, currentShake)),
-					math.rad(math.random(-currentShake, currentShake))
-				)
-
-			RunService.RenderStepped:Wait()
-		end
-	end)
-end
-
 -- ═══════════════════════════════════════════════════════════
---  CAMERA RECOIL - IMPROVED & REALISTIC
+--  AAA CAMERA RECOIL & SHAKE SYSTEM
 -- ═══════════════════════════════════════════════════════════
 
--- Apply camera recoil - KICKS UP on fire, then recovers DOWN
+-- Apply camera recoil
 local function applyCameraRecoil(recoilData)
 	if not recoilData then
 		return
@@ -643,48 +565,132 @@ local function applyCameraRecoil(recoilData)
 	local vertical = recoilData[1] or 0
 	local horizontal = recoilData[2] or 0
 
-	-- INSTANT KICK: Add velocity to recoil for snappier feel
-	-- The bigger the recoil values, the bigger the kick
+	-- Add velocity for snappy kick
 	RecoilVelocity = RecoilVelocity + Vector2.new(horizontal * 2, vertical * 2)
 
-	debugLog("RECOIL", string.format("🎯 RECOIL KICK - Vertical: %.2f, Horizontal: %.2f", vertical, horizontal))
-	debugLog("RECOIL", string.format("   Current Velocity: X=%.2f, Y=%.2f", RecoilVelocity.X, RecoilVelocity.Y))
+	debugLog("RECOIL", string.format("🎯 RECOIL KICK - V: %.2f, H: %.2f", vertical, horizontal))
 end
 
--- Update camera with recoil - SMOOTH RECOVERY
-RunService.RenderStepped:Connect(function(deltaTime)
-	-- Apply velocity to offset (creates the initial KICK)
-	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
+-- Apply enhanced AAA-style camera shake with Perlin noise
+local function applyCameraShake(intensity)
+	CameraShake.Intensity = CameraShake.Intensity + (intensity or 0.5)
 
-	-- Dampen velocity (slows down the kick over time)
+	-- Add random impulse for variety
+	CameraShake.RandomImpulse = Vector3.new(
+		(math.random() - 0.5) * intensity * 2,
+		(math.random() - 0.5) * intensity * 2,
+		(math.random() - 0.5) * intensity
+	)
+
+	debugLog("SHAKE", string.format("📳 Camera Shake - Intensity: %.2f", intensity or 0.5))
+end
+
+-- Update camera with recoil & enhanced shake
+RunService.RenderStepped:Connect(function(deltaTime)
+	-- ═══════════════════════════════════════════════════════════
+	--  RECOIL SYSTEM
+	-- ═══════════════════════════════════════════════════════════
+
+	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
 	RecoilVelocity = RecoilVelocity:Lerp(Vector2.new(0, 0), RecoilSnappiness)
 
-	-- Apply recoil to camera if there's any offset
 	if RecoilOffset.Magnitude > 0.001 then
-		-- Apply the recoil rotation to camera
-		-- NEGATIVE Y makes camera look UP (recoil kick upward)
-		-- Horizontal moves camera left/right
 		Camera.CFrame = Camera.CFrame
 			* CFrame.Angles(
-				math.rad(-RecoilOffset.Y), -- Vertical (pitch) - negative = look UP
-				math.rad(RecoilOffset.X), -- Horizontal (yaw) - left/right sway
+				math.rad(-RecoilOffset.Y), -- Vertical
+				math.rad(RecoilOffset.X), -- Horizontal
 				0
 			)
-
-		-- SMOOTH RECOVERY: Gradually return to center
 		RecoilOffset = RecoilOffset:Lerp(Vector2.new(0, 0), RecoilRecoverySpeed * deltaTime)
+	end
 
-		-- Debug current recoil state (only when recoil is active)
-		if RecoilOffset.Magnitude > 0.1 then
-			debugLog(
-				"RECOIL",
-				string.format(
-					"📐 Active Recoil - Offset: X=%.2f, Y=%.2f, Magnitude: %.2f",
-					RecoilOffset.X,
-					RecoilOffset.Y,
-					RecoilOffset.Magnitude
-				)
+	-- ═══════════════════════════════════════════════════════════
+	--  ENHANCED CAMERA SHAKE with Perlin Noise
+	-- ═══════════════════════════════════════════════════════════
+
+	if CameraShake.Intensity > 0.001 then
+		-- Update noise offsets
+		CameraShake.NoiseOffsetX = CameraShake.NoiseOffsetX + deltaTime * CameraShake.NoiseSpeed
+		CameraShake.NoiseOffsetY = CameraShake.NoiseOffsetY + deltaTime * CameraShake.NoiseSpeed
+		CameraShake.NoiseOffsetZ = CameraShake.NoiseOffsetZ + deltaTime * CameraShake.NoiseSpeed
+
+		-- Generate Perlin noise for smooth, natural shake
+		local noiseX = perlinNoise(CameraShake.NoiseOffsetX)
+		local noiseY = perlinNoise(CameraShake.NoiseOffsetY)
+		local noiseZ = perlinNoise(CameraShake.NoiseOffsetZ)
+
+		-- Apply intensity and multipliers
+		local shakeX = noiseX * CameraShake.Intensity * CameraShake.YawMultiplier
+		local shakeY = noiseY * CameraShake.Intensity * CameraShake.PitchMultiplier
+		local shakeZ = noiseZ * CameraShake.Intensity * CameraShake.RollMultiplier
+
+		-- Add random impulse
+		shakeX = shakeX + CameraShake.RandomImpulse.X
+		shakeY = shakeY + CameraShake.RandomImpulse.Y
+		shakeZ = shakeZ + CameraShake.RandomImpulse.Z
+
+		-- Apply shake to camera
+		Camera.CFrame = Camera.CFrame
+			* CFrame.Angles(
+				math.rad(shakeY), -- Pitch
+				math.rad(shakeX), -- Yaw
+				math.rad(shakeZ) -- Roll
 			)
+
+		-- Decay intensity
+		CameraShake.Intensity = math.max(CameraShake.Intensity - (CameraShake.Decay * deltaTime), 0)
+
+		-- Decay random impulse
+		CameraShake.RandomImpulse =
+			CameraShake.RandomImpulse:Lerp(Vector3.new(0, 0, 0), CameraShake.ImpulseDecay * deltaTime)
+	end
+end)
+
+-- ═══════════════════════════════════════════════════════════
+--  CHARACTER ROTATION TO MOUSE
+-- ═══════════════════════════════════════════════════════════
+
+-- Rotate character to face mouse position
+RunService.RenderStepped:Connect(function(deltaTime)
+	if not RotateToMouse then
+		return
+	end
+
+	if not EquippedTool then
+		return
+	end
+
+	if not HumanoidRootPart then
+		return
+	end
+
+	-- Get mouse position in world
+	local mouse = Player:GetMouse()
+	if not mouse then
+		return
+	end
+
+	local mouseHit = mouse.Hit.Position
+
+	-- Calculate direction from character to mouse (only Y-axis rotation)
+	local rootPos = HumanoidRootPart.Position
+	local direction = Vector3.new(mouseHit.X - rootPos.X, 0, mouseHit.Z - rootPos.Z)
+
+	if direction.Magnitude > 0.1 then
+		-- Target rotation
+		local targetCFrame = CFrame.new(rootPos, rootPos + direction)
+
+		-- Smooth rotation using lerp
+		local currentCFrame = HumanoidRootPart.CFrame
+		local newCFrame = currentCFrame:Lerp(targetCFrame, RotationSpeed * deltaTime * RotationSmoothness)
+
+		-- Apply rotation
+		HumanoidRootPart.CFrame = newCFrame
+
+		-- Debug rotation
+		if DEBUG and math.random() < 0.01 then -- Log occasionally to avoid spam
+			local angle = math.deg(math.atan2(direction.X, direction.Z))
+			debugLog("ROTATION", string.format("Character facing: %.1f°", angle))
 		end
 	end
 end)
@@ -693,42 +699,23 @@ end)
 --  ANIMATIONS
 -- ═══════════════════════════════════════════════════════════
 
--- Load animations
 local function loadAnimations(animationIds)
-	debugLog("ANIM", "Loading animations...")
-	debugLog("CONFIG", "Animation IDs received:")
-	for name, id in pairs(animationIds) do
-		debugLog("INFO", "  └─", name, "=", id)
-	end
-
-	-- Clean up old animations
 	for name, track in pairs(AnimationTracks) do
 		if track then
-			debugLog("INFO", "Stopping and cleaning up old animation:", name)
 			track:Stop()
 			track:Destroy()
 		end
 		AnimationTracks[name] = nil
 	end
 
-	-- Load new animations
 	local animator = Humanoid:FindFirstChildOfClass("Animator")
 	if not animator then
-		debugLog("INFO", "No Animator found, creating one...")
 		animator = Instance.new("Animator")
 		animator.Parent = Humanoid
-		debugLog("SUCCESS", "Created Animator")
-	else
-		debugLog("INFO", "Found existing Animator")
 	end
-
-	local loadedCount = 0
-	local skippedCount = 0
 
 	for name, animId in pairs(animationIds) do
 		if animId and animId > 0 then
-			debugLog("LOAD", "Loading animation:", name, "with ID:", animId)
-
 			local animation = Instance.new("Animation")
 			animation.AnimationId = "rbxassetid://" .. animId
 
@@ -738,38 +725,18 @@ local function loadAnimations(animationIds)
 
 			if success and track then
 				AnimationTracks[name] = track
-				debugLog("SUCCESS", "Loaded animation:", name)
-				debugLog("INFO", "  └─ ID: rbxassetid://" .. animId)
-				debugLog("INFO", "  └─ Length:", track.Length, "seconds")
-				debugLog("INFO", "  └─ Priority:", track.Priority.Name)
-				loadedCount = loadedCount + 1
-			else
-				debugLog("ERROR", "Failed to load animation:", name)
-				debugLog("ERROR", "  └─ Error:", tostring(track))
 			end
 
 			animation:Destroy()
-		else
-			debugLog("WARNING", "Skipping animation:", name, "(ID is 0 or nil)")
-			skippedCount = skippedCount + 1
 		end
 	end
 
-	debugLog("INFO", "Animation loading complete!")
-	debugLog("INFO", "  └─ Loaded:", loadedCount)
-	debugLog("INFO", "  └─ Skipped:", skippedCount)
-
-	-- Play idle animation
 	if AnimationTracks.Idle then
 		AnimationTracks.Idle.Looped = true
 		AnimationTracks.Idle:Play()
-		debugLog("SUCCESS", "Started playing Idle animation")
-	else
-		debugLog("WARNING", "No Idle animation to play")
 	end
 end
 
--- Play animation
 local function playAnimation(animName, fadeTime)
 	local track = AnimationTracks[animName]
 	if track then
@@ -781,11 +748,9 @@ end
 --  INPUT HANDLING
 -- ═══════════════════════════════════════════════════════════
 
--- Track if mouse is held down
 local IsMouseDown = false
 local FireConnection = nil
 
--- Handle mouse input
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
@@ -797,13 +762,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		return
 	end
 
-	-- Fire gun on mouse click
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		IsMouseDown = true
 
-		-- Determine fire mode
 		if GunConfig.FireMode == "Auto" or GunConfig.FireMode == "Burst" then
-			-- Auto fire loop
 			FireConnection = RunService.Heartbeat:Connect(function()
 				if IsMouseDown and CanFire then
 					local mouse = Player:GetMouse()
@@ -813,7 +775,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 				end
 			end)
 		elseif GunConfig.FireMode == "Semi" then
-			-- Single shot
 			if CanFire then
 				local mouse = Player:GetMouse()
 				if mouse then
@@ -823,7 +784,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		end
 	end
 
-	-- Reload on R key
 	if input.KeyCode == Enum.KeyCode.R then
 		ReloadGunRemote:FireServer()
 	end
@@ -843,199 +803,80 @@ end)
 --  REMOTE EVENT HANDLERS
 -- ═══════════════════════════════════════════════════════════
 
--- Handle gun equipped
 EquipGunRemote.OnClientEvent:Connect(function(config)
-	debugLog(
-		"FIRE",
-		"═══════════════════════════════════════════"
-	)
 	debugLog("FIRE", "GUN EQUIP EVENT RECEIVED")
-	debugLog(
-		"FIRE",
-		"═══════════════════════════════════════════"
-	)
 
 	GunConfig = config
 	GunFrame.Visible = true
 
-	-- Print full config
-	debugLog("CONFIG", "Full gun configuration:")
-	debugLog("INFO", "GunName:", config.GunName)
-	debugLog("INFO", "GunImage:", config.GunImage)
-	debugLog("INFO", "BaseDamage:", config.BaseDamage)
-	debugLog("INFO", "HeadshotMultiplier:", config.HeadshotMultiplier)
-	debugLog("INFO", "FireRate:", config.FireRate, "RPM")
-	debugLog("INFO", "FireMode:", config.FireMode)
-	debugLog("INFO", "MagazineSize:", config.MagazineSize)
-	debugLog("INFO", "ReserveAmmo:", config.ReserveAmmo)
-	debugLog("INFO", "MaxRange:", config.MaxRange)
-
-	debugLog("CONFIG", "Recoil Pattern:")
-	for i, pattern in ipairs(config.RecoilPattern or {}) do
-		debugLog("INFO", string.format("  └─ Shot %d: Vertical=%.2f, Horizontal=%.2f", i, pattern[1], pattern[2]))
-	end
-
-	debugLog("LOAD", "Looking for assets in: ReplicatedStorage > Assets >", config.GunName)
-
-	-- Check if Assets folder exists
-	if not AssetsFolder then
-		debugLog("ERROR", "Assets folder not found in ReplicatedStorage!")
-		return
-	else
-		debugLog("SUCCESS", "Assets folder found")
-	end
-
-	-- List available folders in Assets
-	debugLog("INFO", "Available folders in Assets:")
-	for _, folder in ipairs(AssetsFolder:GetChildren()) do
-		debugLog("INFO", "  └─", folder.Name, "(" .. folder.ClassName .. ")")
-	end
-
-	-- Clean up old sounds
 	cleanupSounds()
 
-	-- Load sounds from config
 	if config.Assets then
-		debugLog("CONFIG", "Assets configuration found:")
-		debugLog("INFO", "  FireSound:", config.Assets.FireSound or "nil")
-		debugLog("INFO", "  ReloadSound:", config.Assets.ReloadSound or "nil")
-		debugLog("INFO", "  EmptyClickSound:", config.Assets.EmptyClickSound or "nil")
-		debugLog("INFO", "  ShellEjectSound:", config.Assets.ShellEjectSound or "nil")
-		debugLog("INFO", "  MuzzleFlash:", config.Assets.MuzzleFlash or "nil")
-		debugLog("INFO", "  ShellCasing:", config.Assets.ShellCasing or "nil")
-
-		debugLog("SOUND", "═══ LOADING SOUNDS ═══")
 		Sounds.Fire = loadSound(config.Assets.FireSound, config.GunName)
 		Sounds.Reload = loadSound(config.Assets.ReloadSound, config.GunName)
 		Sounds.EmptyClick = loadSound(config.Assets.EmptyClickSound, config.GunName)
 		Sounds.ShellEject = loadSound(config.Assets.ShellEjectSound, config.GunName)
 
-		debugLog("SOUND", "Sound loading summary:")
-		debugLog("INFO", "  FireSound:", Sounds.Fire and "✅ LOADED" or "❌ FAILED")
-		debugLog("INFO", "  ReloadSound:", Sounds.Reload and "✅ LOADED" or "❌ FAILED")
-		debugLog("INFO", "  EmptyClick:", Sounds.EmptyClick and "✅ LOADED" or "❌ FAILED")
-		debugLog("INFO", "  ShellEject:", Sounds.ShellEject and "✅ LOADED" or "❌ FAILED")
-
-		-- Load VFX assets
-		debugLog("VFX", "═══ LOADING VFX ASSETS ═══")
 		VFXAssets.MuzzleFlash = loadVFXAsset(config.Assets.MuzzleFlash, config.GunName)
 		VFXAssets.BulletTracer = loadVFXAsset(config.Assets.BulletTracer, config.GunName)
 		VFXAssets.HitEffect = loadVFXAsset(config.Assets.HitEffect, config.GunName)
 		VFXAssets.ShellCasing = loadVFXAsset(config.Assets.ShellCasing, config.GunName)
-
-		debugLog("VFX", "VFX loading summary:")
-		debugLog("INFO", "  MuzzleFlash:", VFXAssets.MuzzleFlash and "✅ LOADED" or "⚪ Using default")
-		debugLog("INFO", "  BulletTracer:", VFXAssets.BulletTracer and "✅ LOADED" or "⚪ Using default")
-		debugLog("INFO", "  HitEffect:", VFXAssets.HitEffect and "✅ LOADED" or "⚪ Using default")
-		debugLog("INFO", "  ShellCasing:", VFXAssets.ShellCasing and "✅ LOADED" or "⚪ Using default")
-	else
-		debugLog("ERROR", "No Assets table found in config!")
 	end
 
-	-- Load animations
 	if config.Animations then
-		debugLog("ANIM", "═══ LOADING ANIMATIONS ═══")
 		loadAnimations(config.Animations)
-	else
-		debugLog("WARNING", "No Animations table found in config")
 	end
 
-	-- Wait for tool to be equipped
 	task.wait(0.1)
 	EquippedTool = Character:FindFirstChildOfClass("Tool")
 
-	if EquippedTool then
-		debugLog("SUCCESS", "Tool equipped:", EquippedTool.Name)
-		debugLog("INFO", "  └─ Muzzle:", EquippedTool:FindFirstChild("Muzzle") and "✅ Found" or "❌ Missing")
-		debugLog(
-			"INFO",
-			"  └─ EjectionPort:",
-			EquippedTool:FindFirstChild("EjectionPort") and "✅ Found" or "⚪ Optional"
-		)
-	else
-		debugLog("WARNING", "No tool found in character")
-	end
-
-	debugLog(
-		"SUCCESS",
-		"═══════════════════════════════════════════"
-	)
 	debugLog("SUCCESS", "GUN SETUP COMPLETE!")
-	debugLog(
-		"SUCCESS",
-		"═══════════════════════════════════════════"
-	)
 end)
 
--- Handle gun unequipped
 UnequipGunRemote.OnClientEvent:Connect(function()
 	GunConfig = nil
 	EquippedTool = nil
 	GunFrame.Visible = false
 
-	-- Clean up sounds
 	cleanupSounds()
 
-	-- Clear VFX assets
 	VFXAssets.MuzzleFlash = nil
 	VFXAssets.BulletTracer = nil
 	VFXAssets.HitEffect = nil
 	VFXAssets.ShellCasing = nil
 
-	-- Stop animations
 	for name, track in pairs(AnimationTracks) do
 		if track then
 			track:Stop()
 		end
 	end
 
-	-- Reset recoil
 	RecoilOffset = Vector2.new(0, 0)
 	RecoilVelocity = Vector2.new(0, 0)
+	CameraShake.Intensity = 0
+	CameraShake.RandomImpulse = Vector3.new(0, 0, 0)
 end)
 
--- Handle effects
 PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
-	debugLog("FIRE", "Effect requested:", effectType)
-
 	if effectType == "Fire" then
-		debugLog("FIRE", "Playing fire effects...")
-
-		-- Play fire animation
 		playAnimation("Fire", 0.05)
 
-		-- Get muzzle and ejection port
 		local muzzle = EquippedTool and EquippedTool:FindFirstChild("Muzzle")
 		local ejectionPort = EquippedTool and EquippedTool:FindFirstChild("EjectionPort") or muzzle
 
-		debugLog("INFO", "Muzzle part:", muzzle and "✅ Found" or "❌ Missing")
-		debugLog("INFO", "Ejection port:", ejectionPort and "✅ Found" or "❌ Missing")
-
-		-- Muzzle flash
 		if muzzle then
-			debugLog("VFX", "Creating muzzle flash...")
 			createMuzzleFlash(muzzle)
-		else
-			debugLog("ERROR", "Cannot create muzzle flash - no muzzle part!")
 		end
 
-		-- Shell ejection
 		if ejectionPort then
-			debugLog("VFX", "Creating shell ejection...")
 			createShellEjection(ejectionPort)
 		end
 
-		-- Bullet tracer
 		if data.MuzzlePosition and data.HitResult then
-			debugLog("VFX", "Creating bullet tracer...")
 			createBulletTracer(data.MuzzlePosition, data.HitResult.Position)
 		end
 
-		-- Hit effect
 		if data.HitResult and data.HitResult.Hit then
-			debugLog("VFX", "Creating hit effect at", data.HitResult.Position)
-			debugLog("INFO", "  └─ Material:", data.HitResult.Material.Name)
-			debugLog("INFO", "  └─ Headshot:", data.HitResult.IsHeadshot and "YES" or "NO")
 			createHitEffect(
 				data.HitResult.Position,
 				data.HitResult.Normal,
@@ -1044,61 +885,39 @@ PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
 			)
 		end
 
-		-- Camera recoil - THE MAGIC HAPPENS HERE
 		if data.Recoil then
-			debugLog("RECOIL", string.format("🎯 Applying recoil - V: %.2f, H: %.2f", data.Recoil[1], data.Recoil[2]))
 			applyCameraRecoil(data.Recoil)
 		end
 
-		-- Camera shake
-		cameraShake(0.3)
+		-- Enhanced AAA shake
+		applyCameraShake(0.6)
 
-		-- Play fire sound
 		if Sounds.Fire then
-			debugLog("SOUND", "Playing fire sound...")
 			Sounds.Fire:Play()
-		else
-			debugLog("WARNING", "Fire sound not loaded - cannot play!")
 		end
 	elseif effectType == "Reload" then
-		debugLog("INFO", "Reload effect:", data.ReloadType, "- Time:", data.ReloadTime, "seconds")
-		-- Play reload animation
 		local animName = data.ReloadType == "Tactical" and "ReloadTactical" or "ReloadEmpty"
-		debugLog("ANIM", "Playing reload animation:", animName)
 		playAnimation(animName, 0.2)
 
-		-- Play reload sound
 		if Sounds.Reload then
-			debugLog("SOUND", "Playing reload sound...")
 			Sounds.Reload:Play()
-		else
-			debugLog("WARNING", "Reload sound not loaded - cannot play!")
 		end
 
-		-- Disable firing during reload
 		CanFire = false
-		debugLog("INFO", "Firing disabled for", data.ReloadTime, "seconds")
 		task.delay(data.ReloadTime, function()
 			CanFire = true
-			debugLog("SUCCESS", "Reload complete - firing enabled")
 		end)
 	elseif effectType == "EmptyClick" then
-		debugLog("WARNING", "Gun is empty - playing empty click sound")
-		-- Play empty click sound
 		if Sounds.EmptyClick then
 			Sounds.EmptyClick:Play()
-		else
-			debugLog("WARNING", "EmptyClick sound not loaded!")
 		end
 	end
 end)
 
--- Handle ammo UI updates
 UpdateAmmoRemote.OnClientEvent:Connect(function(ammoData)
 	CurrentBulletLabel.Text = tostring(ammoData.CurrentAmmo)
 	MaxBulletLabel.Text = tostring(ammoData.ReserveAmmo)
 
-	-- Update gun image if provided
 	if ammoData.GunImage then
 		EquippedGunImage.Image = ammoData.GunImage
 	end
@@ -1108,24 +927,21 @@ end)
 --  INITIALIZATION
 -- ═══════════════════════════════════════════════════════════
 
--- Hide gun frame initially
 GunFrame.Visible = false
 
 debugLog(
 	"SUCCESS",
 	"═══════════════════════════════════════════"
 )
-debugLog("SUCCESS", "GUN CLIENT HANDLER INITIALIZED - IMPROVED RECOIL")
+debugLog("SUCCESS", "GUN CLIENT - CHARACTER ROTATION + AAA SHAKE")
 debugLog(
 	"SUCCESS",
 	"═══════════════════════════════════════════"
 )
-debugLog("CONFIG", "DEBUG MODE:", DEBUG and "ENABLED ✅" or "DISABLED")
-debugLog("RECOIL", "Recoil Settings:")
-debugLog("RECOIL", "  └─ Recovery Speed:", RecoilRecoverySpeed, "(lower = slower recovery)")
-debugLog("RECOIL", "  └─ Snappiness:", RecoilSnappiness, "(higher = snappier kick)")
-debugLog("INFO", "Assets will be loaded from: ReplicatedStorage > Assets > [GunName]")
-debugLog("INFO", "Waiting for gun to be equipped...")
+debugLog("ROTATION", "Character Rotation:", RotateToMouse and "ENABLED ✅" or "DISABLED")
+debugLog("ROTATION", "Rotation Speed:", RotationSpeed, "| Smoothness:", RotationSmoothness)
+debugLog("SHAKE", "Enhanced Perlin Shake - Decay:", CameraShake.Decay, "| Speed:", CameraShake.NoiseSpeed)
+debugLog("RECOIL", "Recoil Recovery:", RecoilRecoverySpeed, "| Snappiness:", RecoilSnappiness)
 debugLog(
 	"SUCCESS",
 	"═══════════════════════════════════════════"
