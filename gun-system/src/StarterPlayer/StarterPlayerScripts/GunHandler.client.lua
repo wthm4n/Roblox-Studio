@@ -126,9 +126,10 @@ local CameraShake = {
 }
 
 -- Character rotation settings
-local RotateToMouse = true -- Should character rotate to face mouse
-local RotationSpeed = 12 -- How fast character rotates (higher = faster)
-local RotationSmoothness = 0.25 -- Smoothing factor (0-1, lower = smoother)
+local RotateToMouse = true -- Should character rotate to face mouse when firing
+local RotationSpeed = 18 -- How fast character rotates (higher = faster)
+local RotationSmoothness = 0.4 -- Smoothing factor (0-1, lower = smoother)
+local IsFiring = false -- Track if currently firing
 
 -- Enhanced Perlin-like noise with multiple octaves
 local function perlinNoise(x)
@@ -647,12 +648,17 @@ RunService.RenderStepped:Connect(function(deltaTime)
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  CHARACTER ROTATION TO MOUSE
+--  CHARACTER ROTATION TO MOUSE (ONLY WHEN FIRING)
 -- ═══════════════════════════════════════════════════════════
 
--- Rotate character to face mouse position
+-- Rotate character to face mouse position ONLY when firing
 RunService.RenderStepped:Connect(function(deltaTime)
 	if not RotateToMouse then
+		return
+	end
+
+	-- ONLY rotate if currently firing
+	if not IsFiring then
 		return
 	end
 
@@ -690,7 +696,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		-- Debug rotation
 		if DEBUG and math.random() < 0.01 then -- Log occasionally to avoid spam
 			local angle = math.deg(math.atan2(direction.X, direction.Z))
-			debugLog("ROTATION", string.format("Character facing: %.1f°", angle))
+			debugLog("ROTATION", string.format("🔫 Firing - Character facing: %.1f°", angle))
 		end
 	end
 end)
@@ -764,6 +770,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		IsMouseDown = true
+		IsFiring = true -- Start rotating character
 
 		if GunConfig.FireMode == "Auto" or GunConfig.FireMode == "Burst" then
 			FireConnection = RunService.Heartbeat:Connect(function()
@@ -792,6 +799,7 @@ end)
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		IsMouseDown = false
+		IsFiring = false -- Stop rotating character
 		if FireConnection then
 			FireConnection:Disconnect()
 			FireConnection = nil
