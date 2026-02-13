@@ -348,12 +348,12 @@ local function updateCrosshairStatus(status)
 
 	if status == "Ready" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 255, 255)
-		CrosshairStatus.Text = ""
+		CrosshairStatus.Text = "Ready To Fire"
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 255, 255)
 		ContinuousRotation = false
 	elseif status == "Jammed" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 50, 50)
-		CrosshairStatus.Text = "🔒 JAMMED - Press F"
+		CrosshairStatus.Text = "JAMMED - Press F"
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
 		-- Stop any rotation
 		ContinuousRotation = false
@@ -367,12 +367,12 @@ local function updateCrosshairStatus(status)
 		ContinuousRotationSpeed = -360 -- Counter-clockwise
 	elseif status == "NoAmmo" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 100, 100)
-		CrosshairStatus.Text = "❌ NO AMMO - Reload"
+		CrosshairStatus.Text = "NO AMMO - Reload"
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
 		ContinuousRotation = false
 	elseif status == "Reloading" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 200, 50)
-		CrosshairStatus.Text = "🔄 Reloading..."
+		CrosshairStatus.Text = "Reloading..."
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 200, 50)
 		-- Rotate counter-clockwise during reload
 		ContinuousRotation = true
