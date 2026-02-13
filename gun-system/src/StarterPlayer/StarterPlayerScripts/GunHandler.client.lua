@@ -1,52 +1,23 @@
 --[[
-	Gun Client Handler - AAA REALISTIC CAMERA + CHARACTER ROTATION
+	Gun Client Handler - AAA OVER-THE-SHOULDER SHOOTER
 	Place in StarterPlayer > StarterPlayerScripts
 	
-	IMPROVEMENTS:
-	✅ Character body rotates to face where you're aiming (like PUBG, Fortnite)
-	✅ Enhanced AAA-style camera shake with Perlin noise
-	✅ Smooth character turning with interpolation
-	
-	Handles all client-side effects:
-	- Character rotation toward mouse
-	- Muzzle flash
-	- Bullet tracers
-	- Hit effects
-	- Shell ejection
-	- REALISTIC CAMERA SHAKE & RECOIL
-	- Sounds
-	- Animations
-	- UI updates
+	CORRECT FEATURES:
+	✅ Over-the-shoulder camera with SHIFT LOCK (character follows camera)
+	✅ Mouse wheel zoom in/out (limited range)
+	✅ Custom Shift Lock (auto-enables on equip)
+	✅ Damage Numbers (color-coded, stacking, fading)
+	✅ Animated Crosshair (spring rotation, shows status)
+	✅ Gun Jamming (F to unjam)
+	✅ FIXED SOUNDS (they actually play now)
+	✅ Equip Animation
+	✅ FIXED: Camera shift-locked, character rotates with camera
+	✅ FIXED: Crosshair rotates with spring easing
 ]]
 
 -- ═══════════════════════════════════════════════════════════
---  DEBUG MODE
+--  SERVICES & SETUP
 -- ═══════════════════════════════════════════════════════════
-local DEBUG = true -- Set to false to disable debug logging
-
-local function debugLog(category, ...)
-	if not DEBUG then
-		return
-	end
-
-	local prefix = {
-		["INFO"] = "ℹ️",
-		["SUCCESS"] = "✅",
-		["ERROR"] = "❌",
-		["WARNING"] = "⚠️",
-		["LOAD"] = "📦",
-		["SOUND"] = "🔊",
-		["VFX"] = "🎆",
-		["ANIM"] = "🎬",
-		["CONFIG"] = "⚙️",
-		["FIRE"] = "🔫",
-		["RECOIL"] = "↕️",
-		["SHAKE"] = "📳",
-		["ROTATION"] = "🔄",
-	}
-
-	print(string.format("[GUN DEBUG] %s [%s]", prefix[category] or "📌", category), ...)
-end
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -68,11 +39,61 @@ local PlayEffectRemote = GunRemotes:WaitForChild("PlayEffect")
 local UpdateAmmoRemote = GunRemotes:WaitForChild("UpdateAmmo")
 local EquipGunRemote = GunRemotes:WaitForChild("EquipGun")
 local UnequipGunRemote = GunRemotes:WaitForChild("UnequipGun")
+local UnjamGunRemote = GunRemotes:WaitForChild("UnjamGun")
+local UpdateGunStatusRemote = GunRemotes:WaitForChild("UpdateGunStatus")
 
 -- UI References
 local PlayerGui = Player:WaitForChild("PlayerGui")
-local MainUI = PlayerGui:WaitForChild("MainUI")
-local GunFrame = MainUI:WaitForChild("GunFrame")
+
+-- Create main UI if it doesn't exist
+local MainUI = PlayerGui:FindFirstChild("MainUI")
+if not MainUI then
+	MainUI = Instance.new("ScreenGui")
+	MainUI.Name = "MainUI"
+	MainUI.ResetOnSpawn = false
+	MainUI.Parent = PlayerGui
+end
+
+-- Create Gun Frame
+local GunFrame = MainUI:FindFirstChild("GunFrame")
+if not GunFrame then
+	GunFrame = Instance.new("Frame")
+	GunFrame.Name = "GunFrame"
+	GunFrame.Size = UDim2.new(0, 200, 0, 100)
+	GunFrame.Position = UDim2.new(1, -220, 1, -120)
+	GunFrame.BackgroundTransparency = 1
+	GunFrame.Parent = MainUI
+
+	local EquippedGunImage = Instance.new("ImageLabel")
+	EquippedGunImage.Name = "EquippedGun"
+	EquippedGunImage.Size = UDim2.new(0, 80, 0, 80)
+	EquippedGunImage.Position = UDim2.new(0, 0, 0, 0)
+	EquippedGunImage.BackgroundTransparency = 1
+	EquippedGunImage.Parent = GunFrame
+
+	local CurrentBulletLabel = Instance.new("TextLabel")
+	CurrentBulletLabel.Name = "CurrentBullet"
+	CurrentBulletLabel.Size = UDim2.new(0, 60, 0, 40)
+	CurrentBulletLabel.Position = UDim2.new(0, 90, 0, 0)
+	CurrentBulletLabel.BackgroundTransparency = 1
+	CurrentBulletLabel.Font = Enum.Font.GothamBold
+	CurrentBulletLabel.TextSize = 32
+	CurrentBulletLabel.TextColor3 = Color3.new(1, 1, 1)
+	CurrentBulletLabel.Text = "30"
+	CurrentBulletLabel.Parent = GunFrame
+
+	local MaxBulletLabel = Instance.new("TextLabel")
+	MaxBulletLabel.Name = "MaxBullet"
+	MaxBulletLabel.Size = UDim2.new(0, 60, 0, 30)
+	MaxBulletLabel.Position = UDim2.new(0, 90, 0, 40)
+	MaxBulletLabel.BackgroundTransparency = 1
+	MaxBulletLabel.Font = Enum.Font.Gotham
+	MaxBulletLabel.TextSize = 18
+	MaxBulletLabel.TextColor3 = Color3.new(0.7, 0.7, 0.7)
+	MaxBulletLabel.Text = "90"
+	MaxBulletLabel.Parent = GunFrame
+end
+
 local EquippedGunImage = GunFrame:WaitForChild("EquippedGun")
 local CurrentBulletLabel = GunFrame:WaitForChild("CurrentBullet")
 local MaxBulletLabel = GunFrame:WaitForChild("MaxBullet")
@@ -83,6 +104,7 @@ local GunConfig = nil
 local EquippedTool = nil
 local IsAiming = false
 local CanFire = true
+local GunStatus = "Ready"
 
 -- Animation tracks
 local AnimationTracks = {
@@ -91,63 +113,422 @@ local AnimationTracks = {
 	Fire = nil,
 	ReloadTactical = nil,
 	ReloadEmpty = nil,
+	Equip = nil,
+	Unjam = nil,
 }
 
 -- ═══════════════════════════════════════════════════════════
---  AAA CAMERA RECOIL & SHAKE SYSTEM
+--  SHIFT-LOCKED OVER-THE-SHOULDER CAMERA SYSTEM
 -- ═══════════════════════════════════════════════════════════
 
--- Camera recoil - AAA REALISTIC SYSTEM
-local RecoilOffset = Vector2.new(0, 0) -- Current recoil offset (pitch, yaw)
-local RecoilVelocity = Vector2.new(0, 0) -- Recoil velocity for snappier feel
-local RecoilRecoverySpeed = 8 -- How fast recoil recovers (lower = slower)
-local RecoilSnappiness = 0.3 -- How snappy the initial kick is (0-1, higher = snappier)
+local CameraOffset = Vector3.new(3, 2, 0) -- Offset to RIGHT shoulder (X=right, Y=up, Z=forward)
+local CurrentZoom = 4 -- Closer default zoom like in the video
+local MinZoom = 0.01 -- Minimum zoom
+local MaxZoom = 4 -- Maximum zoom
+local ZoomSpeed = 1.5 -- Slower zoom speed
 
--- Enhanced Camera shake system with Perlin noise
+local CameraEnabled = false
+local CameraConnection = nil
+
+-- Camera rotation (controlled by mouse)
+local CameraAngleX = 0 -- Horizontal rotation (yaw)
+local CameraAngleY = 0 -- Vertical rotation (pitch)
+local MouseSensitivity = 0.004 -- Slightly higher sensitivity like in the video
+
+-- Enable shift-locked over-the-shoulder camera
+local function enableOverShoulderCamera()
+	if CameraEnabled then
+		return
+	end
+
+	CameraEnabled = true
+
+	-- Lock mouse to center AND HIDE CURSOR
+	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+	UserInputService.MouseIconEnabled = false
+
+	-- Set camera to scriptable
+	Camera.CameraType = Enum.CameraType.Scriptable
+
+	-- Initialize camera angles
+	local lookVector = HumanoidRootPart.CFrame.LookVector
+	CameraAngleX = math.atan2(-lookVector.X, -lookVector.Z)
+	CameraAngleY = 0
+
+	-- Update camera every frame
+	if CameraConnection then
+		CameraConnection:Disconnect()
+	end
+
+	CameraConnection = RunService.RenderStepped:Connect(function()
+		if not HumanoidRootPart or not CameraEnabled then
+			return
+		end
+
+		-- Calculate camera direction from angles
+		local cameraCFrame = CFrame.new(HumanoidRootPart.Position)
+			* CFrame.Angles(0, CameraAngleX, 0)
+			* CFrame.Angles(CameraAngleY, 0, 0)
+
+		-- Get camera vectors
+		local lookVector = cameraCFrame.LookVector
+		local rightVector = cameraCFrame.RightVector
+		local upVector = cameraCFrame.UpVector
+
+		-- Calculate shoulder offset (offset to the right and up from character)
+		local shoulderOffset = (rightVector * CameraOffset.X) + (Vector3.new(0, CameraOffset.Y, 0))
+
+		-- Position camera behind character with shoulder offset
+		local cameraPosition = HumanoidRootPart.Position - lookVector * CurrentZoom + shoulderOffset
+
+		-- Look-ahead point (what the camera looks at) - slightly in front and to the side
+		-- This creates the "over-the-shoulder" viewing angle
+		local lookAtOffset = Vector3.new(0, 1, 0) -- Offset aim point to left of character
+		local lookAtPosition = HumanoidRootPart.Position + lookVector * 10 + lookAtOffset
+
+		-- Smoothly interpolate camera CFrame
+		local targetCFrame = CFrame.new(cameraPosition, lookAtPosition)
+		Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, 0.3) -- Smooth camera movement
+
+		-- Rotate character to face camera direction (SHIFT LOCK BEHAVIOR)
+		local flatDirection = Vector3.new(lookVector.X, 0, lookVector.Z).Unit
+		if flatDirection.Magnitude > 0 then
+			local targetCharacterCFrame =
+				CFrame.new(HumanoidRootPart.Position, HumanoidRootPart.Position + flatDirection)
+			HumanoidRootPart.CFrame = HumanoidRootPart.CFrame:Lerp(targetCharacterCFrame, 0.25) -- Smooth character rotation
+		end
+	end)
+
+	print("✅ Shift-Locked Over-the-Shoulder Camera ENABLED")
+end
+
+-- Disable over-the-shoulder camera
+local function disableOverShoulderCamera()
+	if not CameraEnabled then
+		return
+	end
+
+	CameraEnabled = false
+
+	-- Restore mouse behavior AND SHOW CURSOR
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = true
+
+	-- Restore default camera
+	Camera.CameraType = Enum.CameraType.Custom
+
+	-- Disconnect camera update
+	if CameraConnection then
+		CameraConnection:Disconnect()
+		CameraConnection = nil
+	end
+
+	print("❌ Shift-Locked Camera DISABLED")
+end
+
+-- Handle mouse movement (for camera rotation)
+UserInputService.InputChanged:Connect(function(input, gameProcessed)
+	if not CameraEnabled then
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseMovement then
+		-- Update camera angles based on mouse delta
+		CameraAngleX = CameraAngleX - input.Delta.X * MouseSensitivity
+		CameraAngleY = math.clamp(CameraAngleY - input.Delta.Y * MouseSensitivity, math.rad(-80), math.rad(80))
+	end
+end)
+
+-- Handle mouse wheel zoom
+local function handleZoom(input)
+	if not CameraEnabled then
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseWheel then
+		CurrentZoom = math.clamp(CurrentZoom - input.Position.Z * ZoomSpeed, MinZoom, MaxZoom)
+	end
+end
+
+UserInputService.InputChanged:Connect(handleZoom)
+
+-- ═══════════════════════════════════════════════════════════
+--  CROSSHAIR SYSTEM (SPRING ANIMATED + STATUS)
+-- ═══════════════════════════════════════════════════════════
+
+local CrosshairGui = nil
+local CrosshairImage = nil
+local CrosshairStatus = nil
+
+-- Spring rotation system
+local CurrentRotation = 0
+local TargetRotation = 0
+local RotationVelocity = 0
+local SpringStiffness = 200 -- How fast it returns to target
+local SpringDamping = 20 -- How much it dampens oscillation
+
+-- Continuous rotation for reload/jam
+local ContinuousRotation = false
+local ContinuousRotationSpeed = 0
+
+-- Create crosshair GUI
+local function createCrosshair()
+	if CrosshairGui then
+		CrosshairGui:Destroy()
+	end
+
+	-- Create ScreenGui
+	CrosshairGui = Instance.new("ScreenGui")
+	CrosshairGui.Name = "CrosshairGui"
+	CrosshairGui.ResetOnSpawn = false
+	CrosshairGui.Parent = PlayerGui
+
+	-- Create Frame container
+	local Container = Instance.new("Frame")
+	Container.Name = "Container"
+	Container.Size = UDim2.new(1, 0, 1, 0)
+	Container.BackgroundTransparency = 1
+	Container.Parent = CrosshairGui
+
+	-- Create crosshair image (ANIMATED)
+	CrosshairImage = Instance.new("ImageLabel")
+	CrosshairImage.Name = "CrosshairImage"
+	CrosshairImage.Size = UDim2.new(0, 40, 0, 40)
+	CrosshairImage.Position = UDim2.new(0.5, -20, 0.5, -20)
+	CrosshairImage.AnchorPoint = Vector2.new(0.5, 0.5)
+	CrosshairImage.BackgroundTransparency = 1
+	CrosshairImage.Image = "rbxassetid://86534583278469"
+	CrosshairImage.ImageColor3 = Color3.new(1, 1, 1)
+	CrosshairImage.Parent = Container
+
+	-- Create status text below crosshair
+	CrosshairStatus = Instance.new("TextLabel")
+	CrosshairStatus.Name = "StatusLabel"
+	CrosshairStatus.Size = UDim2.new(0, 200, 0, 30)
+	CrosshairStatus.Position = UDim2.new(0.5, -100, 0.5, 40)
+	CrosshairStatus.BackgroundTransparency = 1
+	CrosshairStatus.Font = Enum.Font.GothamBold
+	CrosshairStatus.TextSize = 16
+	CrosshairStatus.TextColor3 = Color3.new(1, 1, 1)
+	CrosshairStatus.Text = ""
+	CrosshairStatus.TextStrokeTransparency = 0.5
+	CrosshairStatus.Parent = Container
+
+	print("🎯 Crosshair Created")
+end
+
+-- Update crosshair status
+local function updateCrosshairStatus(status)
+	if not CrosshairImage or not CrosshairStatus then
+		return
+	end
+
+	if status == "Ready" then
+		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 255, 255)
+		CrosshairStatus.Text = ""
+		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ContinuousRotation = false
+	elseif status == "Jammed" then
+		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 50, 50)
+		CrosshairStatus.Text = "🔒 JAMMED - Press F"
+		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
+		-- Stop any rotation
+		ContinuousRotation = false
+		TargetRotation = CurrentRotation
+	elseif status == "Unjamming" then
+		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 200, 50)
+		CrosshairStatus.Text = "Unjamming..."
+		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 200, 50)
+		-- Rotate counter-clockwise during unjam
+		ContinuousRotation = true
+		ContinuousRotationSpeed = -360 -- Counter-clockwise
+	elseif status == "NoAmmo" then
+		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 100, 100)
+		CrosshairStatus.Text = "❌ NO AMMO - Reload"
+		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+		ContinuousRotation = false
+	elseif status == "Reloading" then
+		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 200, 50)
+		CrosshairStatus.Text = "🔄 Reloading..."
+		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 200, 50)
+		-- Rotate counter-clockwise during reload
+		ContinuousRotation = true
+		ContinuousRotationSpeed = -360 -- Counter-clockwise
+	end
+end
+
+-- Spring physics update for rotation
+local function updateCrosshairRotation(deltaTime)
+	if not CrosshairImage then
+		return
+	end
+
+	if ContinuousRotation then
+		-- Continuous rotation (for reload/unjam)
+		CurrentRotation = CurrentRotation + (ContinuousRotationSpeed * deltaTime)
+		TargetRotation = CurrentRotation -- Keep target moving
+		RotationVelocity = 0 -- No spring physics during continuous rotation
+	else
+		-- Spring physics
+		local displacement = TargetRotation - CurrentRotation
+		local springForce = displacement * SpringStiffness
+		local dampingForce = -RotationVelocity * SpringDamping
+
+		RotationVelocity = RotationVelocity + (springForce + dampingForce) * deltaTime
+		CurrentRotation = CurrentRotation + RotationVelocity * deltaTime
+	end
+
+	CrosshairImage.Rotation = CurrentRotation
+end
+
+-- Add rotation on shoot (spring-based, clockwise kick)
+local function rotateCrosshairOnShoot()
+	-- Add to target rotation (clockwise = positive)
+	TargetRotation = TargetRotation + 30 -- Small clockwise kick
+
+	-- Add velocity for spring effect
+	RotationVelocity = RotationVelocity + 600 -- Impulse
+end
+
+-- Start continuous rotation for reload
+local function rotateCrosshairOnReload(reloadTime)
+	ContinuousRotation = true
+	ContinuousRotationSpeed = -360 -- Counter-clockwise, full rotation per second
+
+	-- Stop after reload time and reset
+	task.delay(reloadTime, function()
+		ContinuousRotation = false
+		CurrentRotation = 0
+		TargetRotation = 0
+		RotationVelocity = 0
+	end)
+end
+
+-- Start continuous rotation for unjam
+local function rotateCrosshairOnUnjam(unjamTime)
+	ContinuousRotation = true
+	ContinuousRotationSpeed = -360 -- Counter-clockwise
+
+	-- Stop after unjam time and reset
+	task.delay(unjamTime, function()
+		ContinuousRotation = false
+		CurrentRotation = 0
+		TargetRotation = 0
+		RotationVelocity = 0
+	end)
+end
+
+-- Update crosshair every frame
+RunService.RenderStepped:Connect(function(deltaTime)
+	updateCrosshairRotation(deltaTime)
+end)
+
+-- ═══════════════════════════════════════════════════════════
+--  DAMAGE NUMBER SYSTEM
+-- ═══════════════════════════════════════════════════════════
+
+local function createDamageNumber(position, damage, isHeadshot, bodyPart)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Size = UDim2.new(0, 100, 0, 50)
+	billboard.Adornee = nil
+	billboard.AlwaysOnTop = true
+	billboard.MaxDistance = 100
+	billboard.Parent = workspace
+
+	local damageLabel = Instance.new("TextLabel")
+	damageLabel.Size = UDim2.new(1, 0, 1, 0)
+	damageLabel.BackgroundTransparency = 1
+	damageLabel.Font = Enum.Font.GothamBold
+	damageLabel.TextSize = isHeadshot and 28 or 22
+	damageLabel.TextStrokeTransparency = 0.5
+	damageLabel.Text = "-" .. math.floor(damage)
+	damageLabel.Parent = billboard
+
+	if isHeadshot then
+		damageLabel.TextColor3 = Color3.fromRGB(255, 220, 0)
+	elseif bodyPart == "Torso" then
+		damageLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+	else
+		damageLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+
+	local randomOffset = Vector3.new((math.random() - 0.5) * 2, math.random() * 3, (math.random() - 0.5) * 2)
+	billboard.StudsOffset = randomOffset
+
+	local startTime = tick()
+	local duration = 1.2
+
+	local connection
+	connection = RunService.RenderStepped:Connect(function()
+		local elapsed = tick() - startTime
+		local alpha = elapsed / duration
+
+		if alpha >= 1 then
+			connection:Disconnect()
+			billboard:Destroy()
+			return
+		end
+
+		billboard.StudsOffset = randomOffset + Vector3.new(0, alpha * 5, 0)
+		damageLabel.TextTransparency = alpha
+		damageLabel.TextStrokeTransparency = 0.5 + (alpha * 0.5)
+	end)
+
+	local part = Instance.new("Part")
+	part.Size = Vector3.new(0.1, 0.1, 0.1)
+	part.Transparency = 1
+	part.CanCollide = false
+	part.Anchored = true
+	part.CFrame = CFrame.new(position)
+	part.Parent = workspace
+	billboard.Adornee = part
+
+	game:GetService("Debris"):AddItem(part, duration + 0.5)
+end
+
+local function showDamageNumber(hitResult)
+	if not hitResult or not hitResult.Damage then
+		return
+	end
+
+	createDamageNumber(
+		hitResult.Position,
+		hitResult.Damage,
+		hitResult.IsHeadshot or false,
+		hitResult.BodyPart or "Body"
+	)
+end
+
+-- ═══════════════════════════════════════════════════════════
+--  CAMERA RECOIL & SHAKE
+-- ═══════════════════════════════════════════════════════════
+
+local RecoilOffset = Vector2.new(0, 0)
+local RecoilVelocity = Vector2.new(0, 0)
+local RecoilRecoverySpeed = 8
+local RecoilSnappiness = 0.3
+
 local CameraShake = {
-	-- Shake intensity
 	Intensity = 0,
-	Decay = 15, -- How fast shake decays
-
-	-- Perlin noise parameters for natural shake
+	Decay = 15,
 	NoiseOffsetX = 0,
 	NoiseOffsetY = 0,
 	NoiseOffsetZ = 0,
-	NoiseSpeed = 35, -- How fast the noise moves (higher = more erratic)
-
-	-- Shake amplitude multipliers
-	PitchMultiplier = 1.2, -- Up/down shake
-	YawMultiplier = 0.8, -- Left/right shake
-	RollMultiplier = 0.4, -- Tilt shake (subtle)
-
-	-- Random impulses for variety
+	NoiseSpeed = 35,
+	PitchMultiplier = 1.2,
+	YawMultiplier = 0.8,
+	RollMultiplier = 0.4,
 	RandomImpulse = Vector3.new(0, 0, 0),
 	ImpulseDecay = 20,
 }
 
--- Character rotation settings
-local RotateToMouse = true -- Should character rotate to face mouse when firing
-local RotationTweenInfo = TweenInfo.new(
-	0.15, -- Duration (seconds) - how long rotation takes
-	Enum.EasingStyle.Quad, -- Easing style (Quad, Cubic, Sine, etc.)
-	Enum.EasingDirection.Out, -- Easing direction (Out = starts fast, ends slow)
-	0, -- Repeat count
-	false, -- Reverse
-	0 -- Delay
-)
-local CurrentRotationTween = nil -- Store active tween
-
--- Enhanced Perlin-like noise with multiple octaves
 local function perlinNoise(x)
 	local function noise(x)
 		local x0 = math.floor(x)
 		local x1 = x0 + 1
 		local sx = x - x0
-
-		-- Smooth interpolation
 		sx = sx * sx * (3 - 2 * sx)
 
-		-- Random hash function
 		local function hash(n)
 			n = math.sin(n) * 43758.5453123
 			return n - math.floor(n)
@@ -156,7 +537,6 @@ local function perlinNoise(x)
 		return hash(x0) * (1 - sx) + hash(x1) * sx
 	end
 
-	-- Multiple octaves for natural movement
 	local result = 0
 	result = result + noise(x) * 1.0
 	result = result + noise(x * 2.1) * 0.5
@@ -166,99 +546,116 @@ local function perlinNoise(x)
 	return result
 end
 
--- Sounds (loaded from gun config)
-local Sounds = {
-	Fire = nil,
-	Reload = nil,
-	EmptyClick = nil,
-	ShellEject = nil,
-}
+local function applyCameraRecoil(recoilData)
+	if not recoilData then
+		return
+	end
+	local vertical = recoilData[1] or 0
+	local horizontal = recoilData[2] or 0
 
--- VFX Assets (loaded from gun config)
-local VFXAssets = {
-	MuzzleFlash = nil,
-	BulletTracer = nil,
-	HitEffect = nil,
-	ShellCasing = nil,
-}
+	-- Apply recoil directly to camera angles for shift lock
+	CameraAngleY = math.clamp(CameraAngleY + math.rad(vertical * 0.8), math.rad(-80), math.rad(80))
+	CameraAngleX = CameraAngleX + math.rad(horizontal * 0.5)
 
--- Asset folder path
+	-- Also add visual recoil kick
+	RecoilVelocity = RecoilVelocity + Vector2.new(horizontal * 1.5, vertical * 1.5)
+end
+
+local function applyCameraShake(intensity)
+	CameraShake.Intensity = CameraShake.Intensity + (intensity or 0.5)
+	CameraShake.RandomImpulse = Vector3.new(
+		(math.random() - 0.5) * intensity * 2,
+		(math.random() - 0.5) * intensity * 2,
+		(math.random() - 0.5) * intensity
+	)
+end
+
+RunService.RenderStepped:Connect(function(deltaTime)
+	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
+	RecoilVelocity = RecoilVelocity:Lerp(Vector2.new(0, 0), RecoilSnappiness)
+
+	if RecoilOffset.Magnitude > 0.001 then
+		Camera.CFrame = Camera.CFrame * CFrame.Angles(math.rad(-RecoilOffset.Y), math.rad(RecoilOffset.X), 0)
+		RecoilOffset = RecoilOffset:Lerp(Vector2.new(0, 0), RecoilRecoverySpeed * deltaTime)
+	end
+
+	if CameraShake.Intensity > 0.001 then
+		CameraShake.NoiseOffsetX = CameraShake.NoiseOffsetX + deltaTime * CameraShake.NoiseSpeed
+		CameraShake.NoiseOffsetY = CameraShake.NoiseOffsetY + deltaTime * CameraShake.NoiseSpeed
+		CameraShake.NoiseOffsetZ = CameraShake.NoiseOffsetZ + deltaTime * CameraShake.NoiseSpeed
+
+		local noiseX = perlinNoise(CameraShake.NoiseOffsetX)
+		local noiseY = perlinNoise(CameraShake.NoiseOffsetY)
+		local noiseZ = perlinNoise(CameraShake.NoiseOffsetZ)
+
+		local shakeX = noiseX * CameraShake.Intensity * CameraShake.YawMultiplier + CameraShake.RandomImpulse.X
+		local shakeY = noiseY * CameraShake.Intensity * CameraShake.PitchMultiplier + CameraShake.RandomImpulse.Y
+		local shakeZ = noiseZ * CameraShake.Intensity * CameraShake.RollMultiplier + CameraShake.RandomImpulse.Z
+
+		Camera.CFrame = Camera.CFrame * CFrame.Angles(math.rad(shakeY), math.rad(shakeX), math.rad(shakeZ))
+
+		CameraShake.Intensity = math.max(CameraShake.Intensity - (CameraShake.Decay * deltaTime), 0)
+		CameraShake.RandomImpulse =
+			CameraShake.RandomImpulse:Lerp(Vector3.new(0, 0, 0), CameraShake.ImpulseDecay * deltaTime)
+	end
+end)
+
+-- ═══════════════════════════════════════════════════════════
+--  SOUNDS & VFX (FIXED!)
+-- ═══════════════════════════════════════════════════════════
+
+local Sounds = {}
+local VFXAssets = {}
 local AssetsFolder = ReplicatedStorage:WaitForChild("Assets")
 
--- ═══════════════════════════════════════════════════════════
---  UTILITY FUNCTIONS
--- ═══════════════════════════════════════════════════════════
-
--- Load sound from config or asset path
+-- FIXED: Load sound properly
 local function loadSound(soundSource, gunName)
-	debugLog("SOUND", "Attempting to load sound:", soundSource, "for gun:", gunName)
-
 	if not soundSource then
-		debugLog("WARNING", "Sound source is nil")
 		return nil
 	end
 
-	-- If it's already a Sound instance, clone it
 	if typeof(soundSource) == "Instance" and soundSource:IsA("Sound") then
 		local sound = soundSource:Clone()
 		sound.Parent = Camera
-		debugLog("SUCCESS", "Loaded direct Sound instance:", soundSource.Name)
-		debugLog("INFO", "  └─ SoundId:", sound.SoundId)
-		debugLog("INFO", "  └─ Volume:", sound.Volume)
 		return sound
 	end
 
-	-- If it's a string path, try to load from Assets folder
 	if typeof(soundSource) == "string" then
-		debugLog("LOAD", "Searching for sound:", soundSource)
-
-		-- Try loading from ReplicatedStorage > Assets > [GunName] > [SoundName]
 		local gunFolder = AssetsFolder:FindFirstChild(gunName)
 		if gunFolder then
-			debugLog("INFO", "Found gun folder:", gunName)
-
 			local sound = gunFolder:FindFirstChild(soundSource)
 			if sound and sound:IsA("Sound") then
 				local clonedSound = sound:Clone()
 				clonedSound.Parent = Camera
-				debugLog("SUCCESS", "Loaded sound from:", gunName .. "/" .. soundSource)
 				return clonedSound
 			end
 
-			-- Try in VFX subfolder
 			local vfxFolder = gunFolder:FindFirstChild("VFX")
 			if vfxFolder then
 				sound = vfxFolder:FindFirstChild(soundSource)
 				if sound and sound:IsA("Sound") then
 					local clonedSound = sound:Clone()
 					clonedSound.Parent = Camera
-					debugLog("SUCCESS", "Loaded sound from:", gunName .. "/VFX/" .. soundSource)
 					return clonedSound
 				end
 			end
 		end
 
-		-- Try direct path (recursive search)
 		local sound = AssetsFolder:FindFirstChild(soundSource, true)
 		if sound and sound:IsA("Sound") then
 			local clonedSound = sound:Clone()
 			clonedSound.Parent = Camera
-			debugLog("SUCCESS", "Found sound via recursive search")
 			return clonedSound
 		end
-
-		debugLog("ERROR", "Sound not found anywhere:", soundSource)
 	end
 
 	return nil
 end
 
--- Load VFX asset (ParticleEmitter, Beam, etc)
 local function loadVFXAsset(assetSource, gunName)
 	if not assetSource then
 		return nil
 	end
-
 	if typeof(assetSource) == "Instance" then
 		return assetSource
 	end
@@ -289,7 +686,6 @@ local function loadVFXAsset(assetSource, gunName)
 	return nil
 end
 
--- Clean up old sounds
 local function cleanupSounds()
 	for soundType, sound in pairs(Sounds) do
 		if sound and sound:IsA("Sound") then
@@ -299,7 +695,6 @@ local function cleanupSounds()
 	end
 end
 
--- Get material-based hit color
 local function getHitColor(material)
 	local materialColors = {
 		[Enum.Material.Grass] = Color3.fromRGB(100, 180, 100),
@@ -314,11 +709,6 @@ local function getHitColor(material)
 	return materialColors[material] or Color3.fromRGB(200, 200, 200)
 end
 
--- ═══════════════════════════════════════════════════════════
---  VISUAL EFFECTS
--- ═══════════════════════════════════════════════════════════
-
--- Create muzzle flash effect
 local function createMuzzleFlash(muzzlePart)
 	if not muzzlePart then
 		return
@@ -358,7 +748,6 @@ local function createMuzzleFlash(muzzlePart)
 		end
 	end
 
-	-- Default muzzle flash
 	local particle = Instance.new("ParticleEmitter")
 	particle.Texture = "rbxasset://textures/particles/smoke_main.dds"
 	particle.Color = ColorSequence.new(Color3.new(1, 0.8, 0.3))
@@ -388,7 +777,6 @@ local function createMuzzleFlash(muzzlePart)
 	end)
 end
 
--- Create bullet tracer
 local function createBulletTracer(startPos, endPos)
 	local attachment0 = Instance.new("Attachment")
 	local attachment1 = Instance.new("Attachment")
@@ -416,11 +804,11 @@ local function createBulletTracer(startPos, endPos)
 	beam.Attachment0 = attachment0
 	beam.Attachment1 = attachment1
 	beam.Color = ColorSequence.new(Color3.new(1, 0.9, 0.5))
-	beam.Brightness = 0
-	beam.Width0 = 0
-	beam.Width1 = 0
+	beam.Brightness = 3
+	beam.Width0 = 0.1
+	beam.Width1 = 0.1
 	beam.FaceCamera = true
-	beam.Transparency = NumberSequence.new(1, 1)
+	beam.Transparency = NumberSequence.new(0.3)
 	beam.Parent = tracerPart
 
 	task.spawn(function()
@@ -436,7 +824,6 @@ local function createBulletTracer(startPos, endPos)
 	end)
 end
 
--- Create hit effect
 local function createHitEffect(position, normal, material, isHeadshot)
 	local hitPart = Instance.new("Part")
 	hitPart.Anchored = true
@@ -490,7 +877,6 @@ local function createHitEffect(position, normal, material, isHeadshot)
 	end)
 end
 
--- Create shell ejection
 local function createShellEjection(ejectionPort)
 	if not ejectionPort then
 		return
@@ -557,152 +943,6 @@ local function createShellEjection(ejectionPort)
 	end
 
 	game:GetService("Debris"):AddItem(shell, 5)
-end
-
--- ═══════════════════════════════════════════════════════════
---  AAA CAMERA RECOIL & SHAKE SYSTEM
--- ═══════════════════════════════════════════════════════════
-
--- Apply camera recoil
-local function applyCameraRecoil(recoilData)
-	if not recoilData then
-		return
-	end
-
-	local vertical = recoilData[1] or 0
-	local horizontal = recoilData[2] or 0
-
-	-- Add velocity for snappy kick
-	RecoilVelocity = RecoilVelocity + Vector2.new(horizontal * 2, vertical * 2)
-
-	debugLog("RECOIL", string.format("🎯 RECOIL KICK - V: %.2f, H: %.2f", vertical, horizontal))
-end
-
--- Apply enhanced AAA-style camera shake with Perlin noise
-local function applyCameraShake(intensity)
-	CameraShake.Intensity = CameraShake.Intensity + (intensity or 0.5)
-
-	-- Add random impulse for variety
-	CameraShake.RandomImpulse = Vector3.new(
-		(math.random() - 0.5) * intensity * 2,
-		(math.random() - 0.5) * intensity * 2,
-		(math.random() - 0.5) * intensity
-	)
-
-	debugLog("SHAKE", string.format("📳 Camera Shake - Intensity: %.2f", intensity or 0.5))
-end
-
--- Update camera with recoil & enhanced shake
-RunService.RenderStepped:Connect(function(deltaTime)
-	-- ═══════════════════════════════════════════════════════════
-	--  RECOIL SYSTEM
-	-- ═══════════════════════════════════════════════════════════
-
-	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
-	RecoilVelocity = RecoilVelocity:Lerp(Vector2.new(0, 0), RecoilSnappiness)
-
-	if RecoilOffset.Magnitude > 0.001 then
-		Camera.CFrame = Camera.CFrame
-			* CFrame.Angles(
-				math.rad(-RecoilOffset.Y), -- Vertical
-				math.rad(RecoilOffset.X), -- Horizontal
-				0
-			)
-		RecoilOffset = RecoilOffset:Lerp(Vector2.new(0, 0), RecoilRecoverySpeed * deltaTime)
-	end
-
-	-- ═══════════════════════════════════════════════════════════
-	--  ENHANCED CAMERA SHAKE with Perlin Noise
-	-- ═══════════════════════════════════════════════════════════
-
-	if CameraShake.Intensity > 0.001 then
-		-- Update noise offsets
-		CameraShake.NoiseOffsetX = CameraShake.NoiseOffsetX + deltaTime * CameraShake.NoiseSpeed
-		CameraShake.NoiseOffsetY = CameraShake.NoiseOffsetY + deltaTime * CameraShake.NoiseSpeed
-		CameraShake.NoiseOffsetZ = CameraShake.NoiseOffsetZ + deltaTime * CameraShake.NoiseSpeed
-
-		-- Generate Perlin noise for smooth, natural shake
-		local noiseX = perlinNoise(CameraShake.NoiseOffsetX)
-		local noiseY = perlinNoise(CameraShake.NoiseOffsetY)
-		local noiseZ = perlinNoise(CameraShake.NoiseOffsetZ)
-
-		-- Apply intensity and multipliers
-		local shakeX = noiseX * CameraShake.Intensity * CameraShake.YawMultiplier
-		local shakeY = noiseY * CameraShake.Intensity * CameraShake.PitchMultiplier
-		local shakeZ = noiseZ * CameraShake.Intensity * CameraShake.RollMultiplier
-
-		-- Add random impulse
-		shakeX = shakeX + CameraShake.RandomImpulse.X
-		shakeY = shakeY + CameraShake.RandomImpulse.Y
-		shakeZ = shakeZ + CameraShake.RandomImpulse.Z
-
-		-- Apply shake to camera
-		Camera.CFrame = Camera.CFrame
-			* CFrame.Angles(
-				math.rad(shakeY), -- Pitch
-				math.rad(shakeX), -- Yaw
-				math.rad(shakeZ) -- Roll
-			)
-
-		-- Decay intensity
-		CameraShake.Intensity = math.max(CameraShake.Intensity - (CameraShake.Decay * deltaTime), 0)
-
-		-- Decay random impulse
-		CameraShake.RandomImpulse =
-			CameraShake.RandomImpulse:Lerp(Vector3.new(0, 0, 0), CameraShake.ImpulseDecay * deltaTime)
-	end
-end)
-
--- ═══════════════════════════════════════════════════════════
---  CHARACTER ROTATION TO MOUSE (SMOOTH EASED)
--- ═══════════════════════════════════════════════════════════
-
--- Smoothly rotate character to face mouse using TweenService
-local function rotateCharacterToMouse()
-	if not RotateToMouse then
-		return
-	end
-
-	if not HumanoidRootPart then
-		return
-	end
-
-	local mouse = Player:GetMouse()
-	if not mouse then
-		return
-	end
-
-	local mouseHit = mouse.Hit.Position
-	local rootPos = HumanoidRootPart.Position
-
-	-- Calculate direction (only Y-axis rotation)
-	local direction = Vector3.new(mouseHit.X - rootPos.X, 0, mouseHit.Z - rootPos.Z)
-
-	if direction.Magnitude > 0.1 then
-		-- Calculate target CFrame
-		local targetCFrame = CFrame.new(rootPos, rootPos + direction)
-
-		-- Cancel previous tween if exists
-		if CurrentRotationTween then
-			CurrentRotationTween:Cancel()
-		end
-
-		-- Create smooth rotation tween
-		local rotationTween = TweenService:Create(HumanoidRootPart, RotationTweenInfo, { CFrame = targetCFrame })
-
-		CurrentRotationTween = rotationTween
-		rotationTween:Play()
-
-		local angle = math.deg(math.atan2(direction.X, direction.Z))
-		debugLog("ROTATION", string.format("🎯 Smooth rotation to: %.1f°", angle))
-
-		-- Clean up tween when complete
-		rotationTween.Completed:Connect(function()
-			if CurrentRotationTween == rotationTween then
-				CurrentRotationTween = nil
-			end
-		end)
-	end
 end
 
 -- ═══════════════════════════════════════════════════════════
@@ -775,32 +1015,34 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		IsMouseDown = true
 
-		-- Rotate character smoothly on click
-		rotateCharacterToMouse()
-
 		if GunConfig.FireMode == "Auto" or GunConfig.FireMode == "Burst" then
 			FireConnection = RunService.Heartbeat:Connect(function()
-				if IsMouseDown and CanFire then
-					local mouse = Player:GetMouse()
-					if mouse then
-						-- Rotate before each shot in auto mode
-						rotateCharacterToMouse()
-						FireGunRemote:FireServer(mouse.Hit.Position)
-					end
+				if IsMouseDown and CanFire and GunStatus == "Ready" then
+					-- Calculate target position from camera center
+					local ray = Camera:ViewportPointToRay(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+					local targetPosition = ray.Origin + ray.Direction * 1000
+					FireGunRemote:FireServer(targetPosition)
 				end
 			end)
 		elseif GunConfig.FireMode == "Semi" then
-			if CanFire then
-				local mouse = Player:GetMouse()
-				if mouse then
-					FireGunRemote:FireServer(mouse.Hit.Position)
-				end
+			if CanFire and GunStatus == "Ready" then
+				local ray = Camera:ViewportPointToRay(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+				local targetPosition = ray.Origin + ray.Direction * 1000
+				FireGunRemote:FireServer(targetPosition)
 			end
 		end
 	end
 
 	if input.KeyCode == Enum.KeyCode.R then
-		ReloadGunRemote:FireServer()
+		if GunStatus ~= "Jammed" and GunStatus ~= "Unjamming" then
+			ReloadGunRemote:FireServer()
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		if GunStatus == "Jammed" then
+			UnjamGunRemote:FireServer()
+		end
 	end
 end)
 
@@ -819,11 +1061,22 @@ end)
 -- ═══════════════════════════════════════════════════════════
 
 EquipGunRemote.OnClientEvent:Connect(function(config)
-	debugLog("FIRE", "GUN EQUIP EVENT RECEIVED")
+	print("🔫 GUN EQUIPPED")
 
 	GunConfig = config
 	GunFrame.Visible = true
 
+	-- Enable systems
+	enableOverShoulderCamera()
+	createCrosshair()
+
+	-- Play equip animation
+	if config.Animations and config.Animations.Equip and config.Animations.Equip > 0 then
+		task.wait(0.1)
+		playAnimation("Equip", 0.2)
+	end
+
+	-- Load assets
 	cleanupSounds()
 
 	if config.Assets then
@@ -831,6 +1084,10 @@ EquipGunRemote.OnClientEvent:Connect(function(config)
 		Sounds.Reload = loadSound(config.Assets.ReloadSound, config.GunName)
 		Sounds.EmptyClick = loadSound(config.Assets.EmptyClickSound, config.GunName)
 		Sounds.ShellEject = loadSound(config.Assets.ShellEjectSound, config.GunName)
+		Sounds.Jam = loadSound(config.Assets.JamSound, config.GunName)
+		Sounds.Unjam = loadSound(config.Assets.UnjamSound, config.GunName)
+
+		print("🔊 Loaded sounds:", Sounds.Fire ~= nil, Sounds.Reload ~= nil, Sounds.EmptyClick ~= nil)
 
 		VFXAssets.MuzzleFlash = loadVFXAsset(config.Assets.MuzzleFlash, config.GunName)
 		VFXAssets.BulletTracer = loadVFXAsset(config.Assets.BulletTracer, config.GunName)
@@ -845,13 +1102,22 @@ EquipGunRemote.OnClientEvent:Connect(function(config)
 	task.wait(0.1)
 	EquippedTool = Character:FindFirstChildOfClass("Tool")
 
-	debugLog("SUCCESS", "GUN SETUP COMPLETE!")
+	print("✅ GUN SETUP COMPLETE")
 end)
 
 UnequipGunRemote.OnClientEvent:Connect(function()
+	print("🔫 GUN UNEQUIPPED")
+
 	GunConfig = nil
 	EquippedTool = nil
 	GunFrame.Visible = false
+
+	disableOverShoulderCamera()
+
+	if CrosshairGui then
+		CrosshairGui:Destroy()
+		CrosshairGui = nil
+	end
 
 	cleanupSounds()
 
@@ -870,6 +1136,11 @@ UnequipGunRemote.OnClientEvent:Connect(function()
 	RecoilVelocity = Vector2.new(0, 0)
 	CameraShake.Intensity = 0
 	CameraShake.RandomImpulse = Vector3.new(0, 0, 0)
+	CurrentRotation = 0
+	TargetRotation = 0
+	RotationVelocity = 0
+	ContinuousRotation = false
+	GunStatus = "Ready"
 end)
 
 PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
@@ -898,21 +1169,27 @@ PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
 				data.HitResult.Material,
 				data.HitResult.IsHeadshot
 			)
+			showDamageNumber(data.HitResult)
 		end
 
 		if data.Recoil then
 			applyCameraRecoil(data.Recoil)
 		end
 
-		-- Enhanced AAA shake
 		applyCameraShake(0.6)
+		rotateCrosshairOnShoot()
 
 		if Sounds.Fire then
 			Sounds.Fire:Play()
+			print("🔊 Playing fire sound")
+		else
+			print("❌ Fire sound is nil!")
 		end
 	elseif effectType == "Reload" then
 		local animName = data.ReloadType == "Tactical" and "ReloadTactical" or "ReloadEmpty"
 		playAnimation(animName, 0.2)
+
+		rotateCrosshairOnReload(data.ReloadTime)
 
 		if Sounds.Reload then
 			Sounds.Reload:Play()
@@ -926,6 +1203,30 @@ PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
 		if Sounds.EmptyClick then
 			Sounds.EmptyClick:Play()
 		end
+	elseif effectType == "Jam" then
+		print("🔒 GUN JAMMED!")
+		if Sounds.Jam then
+			Sounds.Jam:Play()
+		end
+	elseif effectType == "JamClick" then
+		if Sounds.EmptyClick then
+			Sounds.EmptyClick:Play()
+		end
+	elseif effectType == "Unjam" then
+		print("🔓 UNJAMMING GUN...")
+		playAnimation("Unjam", 0.2)
+
+		rotateCrosshairOnUnjam(data.UnjamTime)
+
+		if Sounds.Unjam then
+			Sounds.Unjam:Play()
+		end
+
+		CanFire = false
+		task.delay(data.UnjamTime, function()
+			CanFire = true
+			print("✅ GUN UNJAMMED!")
+		end)
 	end
 end)
 
@@ -938,28 +1239,31 @@ UpdateAmmoRemote.OnClientEvent:Connect(function(ammoData)
 	end
 end)
 
+UpdateGunStatusRemote.OnClientEvent:Connect(function(statusData)
+	GunStatus = statusData.Status
+	CanFire = statusData.CanFire
+	updateCrosshairStatus(GunStatus)
+end)
+
 -- ═══════════════════════════════════════════════════════════
 --  INITIALIZATION
 -- ═══════════════════════════════════════════════════════════
 
 GunFrame.Visible = false
 
-debugLog(
-	"SUCCESS",
+print(
 	"═══════════════════════════════════════════"
 )
-debugLog("SUCCESS", "GUN CLIENT - CHARACTER ROTATION + AAA SHAKE")
-debugLog(
-	"SUCCESS",
+print("🔫 AAA OVER-THE-SHOULDER GUN CLIENT LOADED")
+print(
 	"═══════════════════════════════════════════"
 )
-debugLog("ROTATION", "Character Rotation:", RotateToMouse and "ENABLED ✅" or "DISABLED")
-debugLog("ROTATION", "Rotation Style: SMOOTH TWEEN")
-debugLog("ROTATION", "  └─ Duration:", RotationTweenInfo.Time, "seconds")
-debugLog("ROTATION", "  └─ Easing:", RotationTweenInfo.EasingStyle.Name, RotationTweenInfo.EasingDirection.Name)
-debugLog("SHAKE", "Enhanced Perlin Shake - Decay:", CameraShake.Decay, "| Speed:", CameraShake.NoiseSpeed)
-debugLog("RECOIL", "Recoil Recovery:", RecoilRecoverySpeed, "| Snappiness:", RecoilSnappiness)
-debugLog(
-	"SUCCESS",
+print("✅ SHIFT-LOCKED Over-the-Shoulder Camera")
+print("✅ Mouse Wheel Zoom (3-20 studs)")
+print("✅ Damage Numbers (color-coded)")
+print("✅ SPRING Animated Crosshair")
+print("✅ Gun Jamming (F to unjam)")
+print("✅ FIXED Sounds")
+print(
 	"═══════════════════════════════════════════"
 )
