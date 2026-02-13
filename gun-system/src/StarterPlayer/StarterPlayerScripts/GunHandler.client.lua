@@ -261,7 +261,7 @@ UserInputService.InputChanged:Connect(handleZoom)
 
 local CrosshairGui = nil
 local CrosshairImage = nil
-local CrosshairStatus = nil
+local CrosshairStatus = nil -- Reference to the gun's SurfaceGui StatusLabel (Tool > GuiPart > StatusGUI > StatusLabel)
 
 -- Spring rotation system
 local CurrentRotation = 0
@@ -312,17 +312,17 @@ local function getStatusLabel()
 	if not EquippedTool then
 		return nil
 	end
-
+	
 	local guiPart = EquippedTool:FindFirstChild("GuiPart")
 	if not guiPart then
 		return nil
 	end
-
+	
 	local surfaceGui = guiPart:FindFirstChild("StatusGUI")
 	if not surfaceGui then
 		return nil
 	end
-
+	
 	return surfaceGui:FindFirstChild("StatusLabel")
 end
 
@@ -332,7 +332,7 @@ local function destroyCrosshair()
 		CrosshairGui:Destroy()
 		CrosshairGui = nil
 		CrosshairImage = nil
-		CrosshairStatus = nil
+		-- Don't set CrosshairStatus to nil - it's on the gun, not in CrosshairGui
 		print("🎯 Crosshair Destroyed")
 	end
 end
@@ -341,19 +341,19 @@ end
 local function updateCrosshairStatus(status)
 	-- Get the status label from the gun's SurfaceGui
 	CrosshairStatus = getStatusLabel()
-
+	
 	if not CrosshairImage then
 		return
 	end
 
 	if status == "Ready" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 255, 255)
-		CrosshairStatus.Text = "Ready To Fire"
+		CrosshairStatus.Text = ""
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 255, 255)
 		ContinuousRotation = false
 	elseif status == "Jammed" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 50, 50)
-		CrosshairStatus.Text = "JAMMED - Press F"
+		CrosshairStatus.Text = "🔒 JAMMED - Press F"
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
 		-- Stop any rotation
 		ContinuousRotation = false
@@ -367,12 +367,12 @@ local function updateCrosshairStatus(status)
 		ContinuousRotationSpeed = -360 -- Counter-clockwise
 	elseif status == "NoAmmo" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 100, 100)
-		CrosshairStatus.Text = "NO AMMO - Reload"
+		CrosshairStatus.Text = "❌ NO AMMO - Reload"
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
 		ContinuousRotation = false
 	elseif status == "Reloading" then
 		CrosshairImage.ImageColor3 = Color3.fromRGB(255, 200, 50)
-		CrosshairStatus.Text = "Reloading..."
+		CrosshairStatus.Text = "🔄 Reloading..."
 		CrosshairStatus.TextColor3 = Color3.fromRGB(255, 200, 50)
 		-- Rotate counter-clockwise during reload
 		ContinuousRotation = true
@@ -604,7 +604,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	if not IsGunEquipped then -- FIXED: Only run recoil/shake when gun equipped
 		return
 	end
-
+	
 	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
 	RecoilVelocity = RecoilVelocity:Lerp(Vector2.new(0, 0), RecoilSnappiness)
 
@@ -811,50 +811,96 @@ local function createMuzzleFlash(muzzlePart)
 	end)
 end
 
-local function createBulletTracer(startPos, endPos)
-	local attachment0 = Instance.new("Attachment")
-	local attachment1 = Instance.new("Attachment")
+local function createBulletProjectile(startPos, endPos)
+	-- Create the actual bullet part
+	local bullet = Instance.new("Part")
+	bullet.Name = "Bullet"
+	bullet.Size = Vector3.new(0.2, 0.2, 0.5) -- Small bullet shape
+	bullet.Material = Enum.Material.Metal
+	bullet.Color = Color3.fromRGB(255, 220, 100) -- Golden bullet
+	bullet.CanCollide = false
+	bullet.CastShadow = false
+	bullet.Anchored = true
+	bullet.Shape = Enum.PartType.Ball
+	
+	-- Position bullet at start
+	bullet.CFrame = CFrame.new(startPos, endPos)
+	bullet.Parent = workspace
 
-	local tracerPart = Instance.new("Part")
-	tracerPart.Anchored = true
-	tracerPart.CanCollide = false
-	tracerPart.Transparency = 1
-	tracerPart.Size = Vector3.new(0.1, 0.1, 0.1)
-	tracerPart.CFrame = CFrame.new(startPos)
-	tracerPart.Parent = workspace
+	-- Add attachment for trail
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = bullet
 
-	local endPart = Instance.new("Part")
-	endPart.Anchored = true
-	endPart.CanCollide = false
-	endPart.Transparency = 1
-	endPart.Size = Vector3.new(0.1, 0.1, 0.1)
-	endPart.CFrame = CFrame.new(endPos)
-	endPart.Parent = workspace
+	-- Create trail effect
+	local trail = Instance.new("Trail")
+	trail.Attachment0 = attachment
+	trail.Attachment1 = attachment
+	trail.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 200, 100)), -- Yellow-orange at start
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 150, 50)), -- Orange in middle
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 100, 0)) -- Red-orange at end
+	})
+	trail.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.3), -- More visible at start
+		NumberSequenceKeypoint.new(1, 1) -- Fade out at end
+	})
+	trail.Lifetime = 0.3 -- How long trail segments last
+	trail.MinLength = 0.05
+	trail.FaceCamera = true
+	trail.WidthScale = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(1, 0.5) -- Taper at the end
+	})
+	trail.Brightness = 2
+	trail.LightEmission = 0.8
+	trail.Parent = bullet
 
-	attachment0.Parent = tracerPart
-	attachment1.Parent = endPart
+	-- Add glow effect (PointLight)
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(255, 200, 100)
+	light.Brightness = 3
+	light.Range = 8
+	light.Shadows = false
+	light.Parent = bullet
 
-	local beam = Instance.new("Beam")
-	beam.Attachment0 = attachment0
-	beam.Attachment1 = attachment1
-	beam.Color = ColorSequence.new(Color3.new(1, 0.9, 0.5))
-	beam.Brightness = 3
-	beam.Width0 = 0.1
-	beam.Width1 = 0.1
-	beam.FaceCamera = true
-	beam.Transparency = NumberSequence.new(0.3)
-	beam.Parent = tracerPart
+	-- Calculate flight duration and speed
+	local distance = (endPos - startPos).Magnitude
+	local bulletSpeed = 500 -- studs per second (adjust for slower/faster bullets)
+	local travelTime = distance / bulletSpeed
 
-	task.spawn(function()
-		task.wait(0.1)
-		local fadeTime = 0.1
-		local steps = 10
-		for i = 1, steps do
-			beam.Transparency = NumberSequence.new(0.3 + (0.7 * i / steps))
-			task.wait(fadeTime / steps)
+	-- Animate bullet flying
+	local startTime = tick()
+	local connection
+	connection = RunService.Heartbeat:Connect(function()
+		local elapsed = tick() - startTime
+		local alpha = math.min(elapsed / travelTime, 1)
+
+		if alpha >= 1 then
+			-- Bullet reached target
+			connection:Disconnect()
+			
+			-- Fade out effect
+			task.spawn(function()
+				for i = 1, 10 do
+					bullet.Transparency = i / 10
+					light.Brightness = 3 * (1 - i / 10)
+					task.wait(0.02)
+				end
+				bullet:Destroy()
+			end)
+			return
 		end
-		tracerPart:Destroy()
-		endPart:Destroy()
+
+		-- Interpolate position
+		local currentPos = startPos:Lerp(endPos, alpha)
+		bullet.CFrame = CFrame.new(currentPos, endPos)
+	end)
+
+	-- Safety cleanup after max time
+	task.delay(travelTime + 1, function()
+		if bullet and bullet.Parent then
+			bullet:Destroy()
+		end
 	end)
 end
 
@@ -1026,7 +1072,7 @@ local function playAnimation(animName, fadeTime)
 	if not IsGunEquipped then -- FIXED: Don't play gun animations when not holding gun
 		return
 	end
-
+	
 	local track = AnimationTracks[animName]
 	if track then
 		track:Play(fadeTime or 0.1)
@@ -1198,7 +1244,7 @@ PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
 		end
 
 		if data.MuzzlePosition and data.HitResult then
-			createBulletTracer(data.MuzzlePosition, data.HitResult.Position)
+			createBulletProjectile(data.MuzzlePosition, data.HitResult.Position)
 		end
 
 		if data.HitResult and data.HitResult.Hit then
@@ -1290,13 +1336,9 @@ end)
 
 GunFrame.Visible = false
 
-print(
-	"═══════════════════════════════════════════"
-)
+print("═══════════════════════════════════════════")
 print("🔫 AAA OVER-THE-SHOULDER GUN CLIENT LOADED")
-print(
-	"═══════════════════════════════════════════"
-)
+print("═══════════════════════════════════════════")
 print("✅ SHIFT-LOCKED Over-the-Shoulder Camera")
 print("✅ Mouse Wheel Zoom (3-20 studs)")
 print("✅ Damage Numbers (color-coded)")
@@ -1305,6 +1347,4 @@ print("✅ Gun Jamming (F to unjam)")
 print("✅ FIXED Sounds")
 print("✅ FIXED: Normal camera when not holding gun")
 print("✅ FIXED: Animations only when holding gun")
-print(
-	"═══════════════════════════════════════════"
-)
+print("═══════════════════════════════════════════")
