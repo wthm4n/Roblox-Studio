@@ -13,6 +13,8 @@
 	✅ Equip Animation
 	✅ FIXED: Camera shift-locked, character rotates with camera
 	✅ FIXED: Crosshair rotates with spring easing
+	✅ FIXED: Normal camera/FOV when NOT holding gun
+	✅ FIXED: Animations only play when holding gun
 ]]
 
 -- ═══════════════════════════════════════════════════════════
@@ -105,6 +107,7 @@ local EquippedTool = nil
 local IsAiming = false
 local CanFire = true
 local GunStatus = "Ready"
+local IsGunEquipped = false -- NEW: Track if gun is equipped
 
 -- Animation tracks
 local AnimationTracks = {
@@ -161,7 +164,7 @@ local function enableOverShoulderCamera()
 	end
 
 	CameraConnection = RunService.RenderStepped:Connect(function()
-		if not HumanoidRootPart or not CameraEnabled then
+		if not HumanoidRootPart or not CameraEnabled or not IsGunEquipped then -- FIXED: Only run when gun equipped
 			return
 		end
 
@@ -228,7 +231,7 @@ end
 
 -- Handle mouse movement (for camera rotation)
 UserInputService.InputChanged:Connect(function(input, gameProcessed)
-	if not CameraEnabled then
+	if not CameraEnabled or not IsGunEquipped then -- FIXED: Only rotate when gun equipped
 		return
 	end
 
@@ -241,7 +244,7 @@ end)
 
 -- Handle mouse wheel zoom
 local function handleZoom(input)
-	if not CameraEnabled then
+	if not CameraEnabled or not IsGunEquipped then -- FIXED: Only zoom when gun equipped
 		return
 	end
 
@@ -293,7 +296,7 @@ local function createCrosshair()
 	-- Create crosshair image (ANIMATED)
 	CrosshairImage = Instance.new("ImageLabel")
 	CrosshairImage.Name = "CrosshairImage"
-	CrosshairImage.Size = UDim2.new(0, 40, 0, 40)
+	CrosshairImage.Size = UDim2.new(0, 20, 0, 20)
 	CrosshairImage.Position = UDim2.new(0.5, -20, 0.5, -20)
 	CrosshairImage.AnchorPoint = Vector2.new(0.5, 0.5)
 	CrosshairImage.BackgroundTransparency = 1
@@ -315,6 +318,17 @@ local function createCrosshair()
 	CrosshairStatus.Parent = Container
 
 	print("🎯 Crosshair Created")
+end
+
+-- FIXED: Destroy crosshair when gun unequipped
+local function destroyCrosshair()
+	if CrosshairGui then
+		CrosshairGui:Destroy()
+		CrosshairGui = nil
+		CrosshairImage = nil
+		CrosshairStatus = nil
+		print("🎯 Crosshair Destroyed")
+	end
 end
 
 -- Update crosshair status
@@ -359,7 +373,7 @@ end
 
 -- Spring physics update for rotation
 local function updateCrosshairRotation(deltaTime)
-	if not CrosshairImage then
+	if not CrosshairImage or not IsGunEquipped then -- FIXED: Only update when gun equipped
 		return
 	end
 
@@ -397,10 +411,12 @@ local function rotateCrosshairOnReload(reloadTime)
 
 	-- Stop after reload time and reset
 	task.delay(reloadTime, function()
-		ContinuousRotation = false
-		CurrentRotation = 0
-		TargetRotation = 0
-		RotationVelocity = 0
+		if IsGunEquipped then -- FIXED: Only reset if gun still equipped
+			ContinuousRotation = false
+			CurrentRotation = 0
+			TargetRotation = 0
+			RotationVelocity = 0
+		end
 	end)
 end
 
@@ -411,10 +427,12 @@ local function rotateCrosshairOnUnjam(unjamTime)
 
 	-- Stop after unjam time and reset
 	task.delay(unjamTime, function()
-		ContinuousRotation = false
-		CurrentRotation = 0
-		TargetRotation = 0
-		RotationVelocity = 0
+		if IsGunEquipped then -- FIXED: Only reset if gun still equipped
+			ContinuousRotation = false
+			CurrentRotation = 0
+			TargetRotation = 0
+			RotationVelocity = 0
+		end
 	end)
 end
 
@@ -547,7 +565,7 @@ local function perlinNoise(x)
 end
 
 local function applyCameraRecoil(recoilData)
-	if not recoilData then
+	if not recoilData or not IsGunEquipped then -- FIXED: Only apply recoil when gun equipped
 		return
 	end
 	local vertical = recoilData[1] or 0
@@ -562,6 +580,9 @@ local function applyCameraRecoil(recoilData)
 end
 
 local function applyCameraShake(intensity)
+	if not IsGunEquipped then -- FIXED: Only apply shake when gun equipped
+		return
+	end
 	CameraShake.Intensity = CameraShake.Intensity + (intensity or 0.5)
 	CameraShake.RandomImpulse = Vector3.new(
 		(math.random() - 0.5) * intensity * 2,
@@ -571,6 +592,10 @@ local function applyCameraShake(intensity)
 end
 
 RunService.RenderStepped:Connect(function(deltaTime)
+	if not IsGunEquipped then -- FIXED: Only run recoil/shake when gun equipped
+		return
+	end
+
 	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
 	RecoilVelocity = RecoilVelocity:Lerp(Vector2.new(0, 0), RecoilSnappiness)
 
@@ -981,13 +1006,18 @@ local function loadAnimations(animationIds)
 		end
 	end
 
-	if AnimationTracks.Idle then
+	-- FIXED: Only play idle animation when gun is equipped
+	if AnimationTracks.Idle and IsGunEquipped then
 		AnimationTracks.Idle.Looped = true
 		AnimationTracks.Idle:Play()
 	end
 end
 
 local function playAnimation(animName, fadeTime)
+	if not IsGunEquipped then -- FIXED: Don't play gun animations when not holding gun
+		return
+	end
+
 	local track = AnimationTracks[animName]
 	if track then
 		track:Play(fadeTime or 0.1)
@@ -1005,7 +1035,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
 	end
-	if not EquippedTool then
+	if not EquippedTool or not IsGunEquipped then -- FIXED: Check if gun is equipped
 		return
 	end
 	if not GunConfig then
@@ -1063,6 +1093,7 @@ end)
 EquipGunRemote.OnClientEvent:Connect(function(config)
 	print("🔫 GUN EQUIPPED")
 
+	IsGunEquipped = true -- FIXED: Set equipped flag
 	GunConfig = config
 	GunFrame.Visible = true
 
@@ -1108,16 +1139,14 @@ end)
 UnequipGunRemote.OnClientEvent:Connect(function()
 	print("🔫 GUN UNEQUIPPED")
 
+	IsGunEquipped = false -- FIXED: Clear equipped flag
 	GunConfig = nil
 	EquippedTool = nil
 	GunFrame.Visible = false
 
+	-- FIXED: Disable camera and destroy crosshair
 	disableOverShoulderCamera()
-
-	if CrosshairGui then
-		CrosshairGui:Destroy()
-		CrosshairGui = nil
-	end
+	destroyCrosshair()
 
 	cleanupSounds()
 
@@ -1126,6 +1155,7 @@ UnequipGunRemote.OnClientEvent:Connect(function()
 	VFXAssets.HitEffect = nil
 	VFXAssets.ShellCasing = nil
 
+	-- FIXED: Stop all gun animations
 	for name, track in pairs(AnimationTracks) do
 		if track then
 			track:Stop()
@@ -1264,6 +1294,8 @@ print("✅ Damage Numbers (color-coded)")
 print("✅ SPRING Animated Crosshair")
 print("✅ Gun Jamming (F to unjam)")
 print("✅ FIXED Sounds")
+print("✅ FIXED: Normal camera when not holding gun")
+print("✅ FIXED: Animations only when holding gun")
 print(
 	"═══════════════════════════════════════════"
 )
