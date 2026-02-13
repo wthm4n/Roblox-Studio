@@ -443,11 +443,11 @@ local function createBulletTracer(startPos, endPos)
 	beam.Attachment0 = attachment0
 	beam.Attachment1 = attachment1
 	beam.Color = ColorSequence.new(Color3.new(1, 0.9, 0.5))
-	beam.Brightness = 3
-	beam.Width0 = 0.1
-	beam.Width1 = 0.05
+	beam.Brightness = 0
+	beam.Width0 = 0
+	beam.Width1 = 0
 	beam.FaceCamera = true
-	beam.Transparency = NumberSequence.new(0.3)
+	beam.Transparency = NumberSequence.new(1, 1)
 	beam.Parent = tracerPart
 
 	-- Fade out and destroy
