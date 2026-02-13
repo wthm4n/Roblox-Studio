@@ -127,11 +127,15 @@ local CameraShake = {
 
 -- Character rotation settings
 local RotateToMouse = true -- Should character rotate to face mouse when firing
-local InstantRotation = true -- Snap instantly instead of smooth lerp
-local RotationSpeed = 18 -- How fast character rotates if using smooth (ignored if InstantRotation = true)
-local RotationSmoothness = 0.4 -- Smoothing factor (0-1, lower = smoother)
-local IsFiring = false -- Track if currently firing
-local LastRotationTarget = nil -- Store target rotation
+local RotationTweenInfo = TweenInfo.new(
+	0.15, -- Duration (seconds) - how long rotation takes
+	Enum.EasingStyle.Quad, -- Easing style (Quad, Cubic, Sine, etc.)
+	Enum.EasingDirection.Out, -- Easing direction (Out = starts fast, ends slow)
+	0, -- Repeat count
+	false, -- Reverse
+	0 -- Delay
+)
+local CurrentRotationTween = nil -- Store active tween
 
 -- Enhanced Perlin-like noise with multiple octaves
 local function perlinNoise(x)
@@ -650,10 +654,10 @@ RunService.RenderStepped:Connect(function(deltaTime)
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  CHARACTER ROTATION TO MOUSE (ONLY WHEN FIRING)
+--  CHARACTER ROTATION TO MOUSE (SMOOTH EASED)
 -- ═══════════════════════════════════════════════════════════
 
--- Instantly rotate character to face mouse (called on each shot)
+-- Smoothly rotate character to face mouse using TweenService
 local function rotateCharacterToMouse()
 	if not RotateToMouse then
 		return
@@ -675,53 +679,31 @@ local function rotateCharacterToMouse()
 	local direction = Vector3.new(mouseHit.X - rootPos.X, 0, mouseHit.Z - rootPos.Z)
 
 	if direction.Magnitude > 0.1 then
-		if InstantRotation then
-			-- INSTANT SNAP - No lerp, immediate rotation
-			local targetCFrame = CFrame.new(rootPos, rootPos + direction)
-			HumanoidRootPart.CFrame = targetCFrame
+		-- Calculate target CFrame
+		local targetCFrame = CFrame.new(rootPos, rootPos + direction)
 
-			debugLog("ROTATION", "🎯 INSTANT SNAP to target!")
-		else
-			-- Store target for smooth rotation
-			LastRotationTarget = CFrame.new(rootPos, rootPos + direction)
+		-- Cancel previous tween if exists
+		if CurrentRotationTween then
+			CurrentRotationTween:Cancel()
 		end
 
+		-- Create smooth rotation tween
+		local rotationTween = TweenService:Create(HumanoidRootPart, RotationTweenInfo, { CFrame = targetCFrame })
+
+		CurrentRotationTween = rotationTween
+		rotationTween:Play()
+
 		local angle = math.deg(math.atan2(direction.X, direction.Z))
-		debugLog("ROTATION", string.format("Character rotated to: %.1f°", angle))
+		debugLog("ROTATION", string.format("🎯 Smooth rotation to: %.1f°", angle))
+
+		-- Clean up tween when complete
+		rotationTween.Completed:Connect(function()
+			if CurrentRotationTween == rotationTween then
+				CurrentRotationTween = nil
+			end
+		end)
 	end
 end
-
--- Smooth rotation loop (only if InstantRotation = false)
-RunService.RenderStepped:Connect(function(deltaTime)
-	if InstantRotation then
-		return -- Skip if using instant rotation
-	end
-
-	if not RotateToMouse then
-		return
-	end
-
-	-- ONLY rotate if currently firing AND we have a target
-	if not IsFiring or not LastRotationTarget then
-		return
-	end
-
-	if not EquippedTool or not HumanoidRootPart then
-		return
-	end
-
-	-- Smooth rotation toward target
-	local currentCFrame = HumanoidRootPart.CFrame
-	local newCFrame = currentCFrame:Lerp(LastRotationTarget, RotationSpeed * deltaTime * RotationSmoothness)
-	HumanoidRootPart.CFrame = newCFrame
-
-	-- Clear target when close enough
-	local angle = math.acos(math.clamp(currentCFrame.LookVector:Dot(LastRotationTarget.LookVector), -1, 1))
-	if angle < math.rad(2) then -- Within 2 degrees
-		LastRotationTarget = nil
-		debugLog("ROTATION", "✅ Rotation complete")
-	end
-end)
 
 -- ═══════════════════════════════════════════════════════════
 --  ANIMATIONS
@@ -792,9 +774,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		IsMouseDown = true
-		IsFiring = true -- Start rotating character
 
-		-- Rotate character immediately on click
+		-- Rotate character smoothly on click
 		rotateCharacterToMouse()
 
 		if GunConfig.FireMode == "Auto" or GunConfig.FireMode == "Burst" then
@@ -826,7 +807,6 @@ end)
 UserInputService.InputEnded:Connect(function(input, gameProcessed)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		IsMouseDown = false
-		IsFiring = false -- Stop rotating character
 		if FireConnection then
 			FireConnection:Disconnect()
 			FireConnection = nil
@@ -974,7 +954,9 @@ debugLog(
 	"═══════════════════════════════════════════"
 )
 debugLog("ROTATION", "Character Rotation:", RotateToMouse and "ENABLED ✅" or "DISABLED")
-debugLog("ROTATION", "Rotation Speed:", RotationSpeed, "| Smoothness:", RotationSmoothness)
+debugLog("ROTATION", "Rotation Style: SMOOTH TWEEN")
+debugLog("ROTATION", "  └─ Duration:", RotationTweenInfo.Time, "seconds")
+debugLog("ROTATION", "  └─ Easing:", RotationTweenInfo.EasingStyle.Name, RotationTweenInfo.EasingDirection.Name)
 debugLog("SHAKE", "Enhanced Perlin Shake - Decay:", CameraShake.Decay, "| Speed:", CameraShake.NoiseSpeed)
 debugLog("RECOIL", "Recoil Recovery:", RecoilRecoverySpeed, "| Snappiness:", RecoilSnappiness)
 debugLog(
