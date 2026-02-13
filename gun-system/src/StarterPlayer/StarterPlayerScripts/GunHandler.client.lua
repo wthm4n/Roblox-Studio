@@ -1,5 +1,5 @@
 --[[
-	Gun Client Handler
+	Gun Client Handler - IMPROVED CAMERA RECOIL
 	Place in StarterPlayer > StarterPlayerScripts
 	
 	Handles all client-side effects:
@@ -7,7 +7,7 @@
 	- Bullet tracers
 	- Hit effects
 	- Shell ejection
-	- Camera recoil
+	- REALISTIC CAMERA RECOIL (kicks UP, recovers DOWN)
 	- Sounds
 	- Animations
 	- UI updates
@@ -34,6 +34,7 @@ local function debugLog(category, ...)
 		["ANIM"] = "🎬",
 		["CONFIG"] = "⚙️",
 		["FIRE"] = "🔫",
+		["RECOIL"] = "↕️",
 	}
 
 	print(string.format("[GUN DEBUG] %s [%s]", prefix[category] or "📌", category), ...)
@@ -83,9 +84,11 @@ local AnimationTracks = {
 	ReloadEmpty = nil,
 }
 
--- Camera recoil
-local RecoilOffset = Vector2.new(0, 0)
-local RecoilRecoverySpeed = 10
+-- Camera recoil - IMPROVED SYSTEM
+local RecoilOffset = Vector2.new(0, 0) -- Current recoil offset
+local RecoilVelocity = Vector2.new(0, 0) -- Recoil velocity for snappier feel
+local RecoilRecoverySpeed = 8 -- How fast recoil recovers (lower = slower)
+local RecoilSnappiness = 0.3 -- How snappy the initial kick is (0-1, higher = snappier)
 
 -- Sounds (loaded from gun config)
 local Sounds = {
@@ -628,10 +631,10 @@ local function cameraShake(intensity)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  CAMERA RECOIL
+--  CAMERA RECOIL - IMPROVED & REALISTIC
 -- ═══════════════════════════════════════════════════════════
 
--- Apply camera recoil
+-- Apply camera recoil - KICKS UP on fire, then recovers DOWN
 local function applyCameraRecoil(recoilData)
 	if not recoilData then
 		return
@@ -640,18 +643,49 @@ local function applyCameraRecoil(recoilData)
 	local vertical = recoilData[1] or 0
 	local horizontal = recoilData[2] or 0
 
-	RecoilOffset = RecoilOffset + Vector2.new(horizontal, vertical)
+	-- INSTANT KICK: Add velocity to recoil for snappier feel
+	-- The bigger the recoil values, the bigger the kick
+	RecoilVelocity = RecoilVelocity + Vector2.new(horizontal * 2, vertical * 2)
+
+	debugLog("RECOIL", string.format("🎯 RECOIL KICK - Vertical: %.2f, Horizontal: %.2f", vertical, horizontal))
+	debugLog("RECOIL", string.format("   Current Velocity: X=%.2f, Y=%.2f", RecoilVelocity.X, RecoilVelocity.Y))
 end
 
--- Update camera with recoil
+-- Update camera with recoil - SMOOTH RECOVERY
 RunService.RenderStepped:Connect(function(deltaTime)
-	if RecoilOffset.Magnitude > 0.01 then
-		-- Apply recoil to camera
-		local cameraCFrame = Camera.CFrame
-		Camera.CFrame = cameraCFrame * CFrame.Angles(math.rad(-RecoilOffset.Y), math.rad(-RecoilOffset.X), 0)
+	-- Apply velocity to offset (creates the initial KICK)
+	RecoilOffset = RecoilOffset + (RecoilVelocity * deltaTime * 10)
 
-		-- Recover recoil
+	-- Dampen velocity (slows down the kick over time)
+	RecoilVelocity = RecoilVelocity:Lerp(Vector2.new(0, 0), RecoilSnappiness)
+
+	-- Apply recoil to camera if there's any offset
+	if RecoilOffset.Magnitude > 0.001 then
+		-- Apply the recoil rotation to camera
+		-- NEGATIVE Y makes camera look UP (recoil kick upward)
+		-- Horizontal moves camera left/right
+		Camera.CFrame = Camera.CFrame
+			* CFrame.Angles(
+				math.rad(-RecoilOffset.Y), -- Vertical (pitch) - negative = look UP
+				math.rad(RecoilOffset.X), -- Horizontal (yaw) - left/right sway
+				0
+			)
+
+		-- SMOOTH RECOVERY: Gradually return to center
 		RecoilOffset = RecoilOffset:Lerp(Vector2.new(0, 0), RecoilRecoverySpeed * deltaTime)
+
+		-- Debug current recoil state (only when recoil is active)
+		if RecoilOffset.Magnitude > 0.1 then
+			debugLog(
+				"RECOIL",
+				string.format(
+					"📐 Active Recoil - Offset: X=%.2f, Y=%.2f, Magnitude: %.2f",
+					RecoilOffset.X,
+					RecoilOffset.Y,
+					RecoilOffset.Magnitude
+				)
+			)
+		end
 	end
 end)
 
@@ -954,6 +988,10 @@ UnequipGunRemote.OnClientEvent:Connect(function()
 			track:Stop()
 		end
 	end
+
+	-- Reset recoil
+	RecoilOffset = Vector2.new(0, 0)
+	RecoilVelocity = Vector2.new(0, 0)
 end)
 
 -- Handle effects
@@ -1006,9 +1044,9 @@ PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
 			)
 		end
 
-		-- Camera recoil
+		-- Camera recoil - THE MAGIC HAPPENS HERE
 		if data.Recoil then
-			debugLog("INFO", string.format("Applying recoil: V=%.2f, H=%.2f", data.Recoil[1], data.Recoil[2]))
+			debugLog("RECOIL", string.format("🎯 Applying recoil - V: %.2f, H: %.2f", data.Recoil[1], data.Recoil[2]))
 			applyCameraRecoil(data.Recoil)
 		end
 
@@ -1077,12 +1115,15 @@ debugLog(
 	"SUCCESS",
 	"═══════════════════════════════════════════"
 )
-debugLog("SUCCESS", "GUN CLIENT HANDLER INITIALIZED")
+debugLog("SUCCESS", "GUN CLIENT HANDLER INITIALIZED - IMPROVED RECOIL")
 debugLog(
 	"SUCCESS",
 	"═══════════════════════════════════════════"
 )
 debugLog("CONFIG", "DEBUG MODE:", DEBUG and "ENABLED ✅" or "DISABLED")
+debugLog("RECOIL", "Recoil Settings:")
+debugLog("RECOIL", "  └─ Recovery Speed:", RecoilRecoverySpeed, "(lower = slower recovery)")
+debugLog("RECOIL", "  └─ Snappiness:", RecoilSnappiness, "(higher = snappier kick)")
 debugLog("INFO", "Assets will be loaded from: ReplicatedStorage > Assets > [GunName]")
 debugLog("INFO", "Waiting for gun to be equipped...")
 debugLog(
