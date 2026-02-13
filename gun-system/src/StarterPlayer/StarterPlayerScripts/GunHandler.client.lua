@@ -127,9 +127,11 @@ local CameraShake = {
 
 -- Character rotation settings
 local RotateToMouse = true -- Should character rotate to face mouse when firing
-local RotationSpeed = 18 -- How fast character rotates (higher = faster)
+local InstantRotation = true -- Snap instantly instead of smooth lerp
+local RotationSpeed = 18 -- How fast character rotates if using smooth (ignored if InstantRotation = true)
 local RotationSmoothness = 0.4 -- Smoothing factor (0-1, lower = smoother)
 local IsFiring = false -- Track if currently firing
+local LastRotationTarget = nil -- Store target rotation
 
 -- Enhanced Perlin-like noise with multiple octaves
 local function perlinNoise(x)
@@ -651,18 +653,9 @@ end)
 --  CHARACTER ROTATION TO MOUSE (ONLY WHEN FIRING)
 -- ═══════════════════════════════════════════════════════════
 
--- Rotate character to face mouse position ONLY when firing
-RunService.RenderStepped:Connect(function(deltaTime)
+-- Instantly rotate character to face mouse (called on each shot)
+local function rotateCharacterToMouse()
 	if not RotateToMouse then
-		return
-	end
-
-	-- ONLY rotate if currently firing
-	if not IsFiring then
-		return
-	end
-
-	if not EquippedTool then
 		return
 	end
 
@@ -670,34 +663,63 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		return
 	end
 
-	-- Get mouse position in world
 	local mouse = Player:GetMouse()
 	if not mouse then
 		return
 	end
 
 	local mouseHit = mouse.Hit.Position
-
-	-- Calculate direction from character to mouse (only Y-axis rotation)
 	local rootPos = HumanoidRootPart.Position
+
+	-- Calculate direction (only Y-axis rotation)
 	local direction = Vector3.new(mouseHit.X - rootPos.X, 0, mouseHit.Z - rootPos.Z)
 
 	if direction.Magnitude > 0.1 then
-		-- Target rotation
-		local targetCFrame = CFrame.new(rootPos, rootPos + direction)
+		if InstantRotation then
+			-- INSTANT SNAP - No lerp, immediate rotation
+			local targetCFrame = CFrame.new(rootPos, rootPos + direction)
+			HumanoidRootPart.CFrame = targetCFrame
 
-		-- Smooth rotation using lerp
-		local currentCFrame = HumanoidRootPart.CFrame
-		local newCFrame = currentCFrame:Lerp(targetCFrame, RotationSpeed * deltaTime * RotationSmoothness)
-
-		-- Apply rotation
-		HumanoidRootPart.CFrame = newCFrame
-
-		-- Debug rotation
-		if DEBUG and math.random() < 0.01 then -- Log occasionally to avoid spam
-			local angle = math.deg(math.atan2(direction.X, direction.Z))
-			debugLog("ROTATION", string.format("🔫 Firing - Character facing: %.1f°", angle))
+			debugLog("ROTATION", "🎯 INSTANT SNAP to target!")
+		else
+			-- Store target for smooth rotation
+			LastRotationTarget = CFrame.new(rootPos, rootPos + direction)
 		end
+
+		local angle = math.deg(math.atan2(direction.X, direction.Z))
+		debugLog("ROTATION", string.format("Character rotated to: %.1f°", angle))
+	end
+end
+
+-- Smooth rotation loop (only if InstantRotation = false)
+RunService.RenderStepped:Connect(function(deltaTime)
+	if InstantRotation then
+		return -- Skip if using instant rotation
+	end
+
+	if not RotateToMouse then
+		return
+	end
+
+	-- ONLY rotate if currently firing AND we have a target
+	if not IsFiring or not LastRotationTarget then
+		return
+	end
+
+	if not EquippedTool or not HumanoidRootPart then
+		return
+	end
+
+	-- Smooth rotation toward target
+	local currentCFrame = HumanoidRootPart.CFrame
+	local newCFrame = currentCFrame:Lerp(LastRotationTarget, RotationSpeed * deltaTime * RotationSmoothness)
+	HumanoidRootPart.CFrame = newCFrame
+
+	-- Clear target when close enough
+	local angle = math.acos(math.clamp(currentCFrame.LookVector:Dot(LastRotationTarget.LookVector), -1, 1))
+	if angle < math.rad(2) then -- Within 2 degrees
+		LastRotationTarget = nil
+		debugLog("ROTATION", "✅ Rotation complete")
 	end
 end)
 
@@ -772,11 +794,16 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		IsMouseDown = true
 		IsFiring = true -- Start rotating character
 
+		-- Rotate character immediately on click
+		rotateCharacterToMouse()
+
 		if GunConfig.FireMode == "Auto" or GunConfig.FireMode == "Burst" then
 			FireConnection = RunService.Heartbeat:Connect(function()
 				if IsMouseDown and CanFire then
 					local mouse = Player:GetMouse()
 					if mouse then
+						-- Rotate before each shot in auto mode
+						rotateCharacterToMouse()
 						FireGunRemote:FireServer(mouse.Hit.Position)
 					end
 				end
