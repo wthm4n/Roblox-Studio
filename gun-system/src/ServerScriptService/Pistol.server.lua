@@ -1,8 +1,9 @@
 --[[
-	Pistol Server Handler
+	Pistol Server Handler - UPDATED WITH JAMMING
 	Place this script in ServerScriptService
 	
 	Monitors players for "Pistol" tool in their backpack/character
+	Handles server-side gun logic including jamming
 ]]
 
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -17,6 +18,7 @@ local GunSystem = require(ReplicatedStorage.Modules:WaitForChild("GunSystem"))
 local GunRemotes = ReplicatedStorage:WaitForChild("GunRemotes")
 local FireGunRemote = GunRemotes:WaitForChild("FireGun")
 local ReloadGunRemote = GunRemotes:WaitForChild("ReloadGun")
+local UnjamGunRemote = GunRemotes:WaitForChild("UnjamGun")
 
 -- ═══════════════════════════════════════════════════════════
 --  PISTOL CONFIGURATION
@@ -28,68 +30,76 @@ local PistolConfig = {
 	GunImage = "rbxassetid://123456789", -- Replace with your pistol image ID
 
 	-- Damage Settings
-	BaseDamage = 10,
-	HeadshotMultiplier = 3.0,
-	DamageFalloffStart = 75, -- studs where damage falloff begins
-	DamageFalloffEnd = 200, -- studs where damage reaches minimum
-	MinDamage = 5, -- minimum damage at max range
+	BaseDamage = 5,
+	HeadshotMultiplier = 2.5,
+	DamageFalloffStart = 75,
+	DamageFalloffEnd = 200,
+	MinDamage = 5,
 
 	-- Fire Rate & Mode
-	FireRate = 250, -- Rounds Per Minute (RPM) - Semi-auto pistol
-	FireMode = "Semi", -- "Auto", "Semi", "Burst"
+	FireRate = 250, -- RPM
+	FireMode = "Semi",
 	BurstCount = 3,
 	BurstDelay = 0.1,
 
 	-- Ammo Configuration
-	MagazineSize = 7, -- Standard Desert Eagle mag size
-	ReserveAmmo = 35,
-	ReloadTimeTactical = 1.8, -- reload time with bullet in chamber
-	ReloadTimeEmpty = 2.3, -- reload time from empty magazine
+	MagazineSize = 12,
+	ReserveAmmo = 60,
+	ReloadTimeTactical = 1.8,
+	ReloadTimeEmpty = 2.3,
+
+	-- Jamming System
+	JamEnabled = true,
+	JamChancePerShot = 0.02, -- 2% base chance
+	JamChanceIncreasePerShot = 0.005, -- Increases by 0.5% per shot
+	MaxJamChance = 0.15, -- Max 15% jam chance
+	UnjamTime = 1.5, -- 1.5 seconds to unjam
 
 	-- Recoil Pattern (Vertical, Horizontal)
-	-- Pistols have more vertical recoil
 	RecoilPattern = {
-		{ 0.8, 0.15 }, -- Shot 1 - Good kick upward
-		{ 0.9, -0.12 }, -- Shot 2
-		{ 0.85, 0.18 }, -- Shot 3
-		{ 0.95, -0.15 }, -- Shot 4
-		{ 1.0, 0.20 }, -- Shot 5 - Bigger kick
-		{ 0.95, -0.13 }, -- Shot 6
-		{ 0.90, 0.16 }, -- Shot 7
+		{ 0.8, 0.15 },
+		{ 0.9, -0.12 },
+		{ 0.85, 0.18 },
+		{ 0.95, -0.15 },
+		{ 1.0, 0.20 },
+		{ 0.95, -0.13 },
+		{ 0.90, 0.16 },
 	},
 	RecoilRecovery = 0.15,
 
-	-- Bloom/Spread (in degrees)
-	BaseSpread = 0.8, -- Pistols are less accurate
-	SpreadIncrease = 0.4, -- More bloom per shot
-	MaxSpread = 6.0, -- Higher max spread
-	SpreadRecovery = 0.22, -- Faster recovery
+	-- Bloom/Spread
+	BaseSpread = 0.8,
+	SpreadIncrease = 0.4,
+	MaxSpread = 6.0,
+	SpreadRecovery = 0.22,
 
 	-- Range
-	MaxRange = 350, -- Pistol effective range
+	MaxRange = 350,
 
-	-- Animation IDs (replace with your animation IDs)
+	-- Animation IDs (⚠️ REPLACE WITH YOUR ANIMATION IDs)
 	Animations = {
-		Idle = 115284468970500, -- idle animation ID
-		Walk = 0, -- walking animation ID
-		Fire = 129841784532184, -- fire animation ID
-		ReloadTactical = 77706176424948, -- tactical reload (bullet in chamber)
-		ReloadEmpty = 77706176424948, -- empty reload animation
+		Idle = 115284468970500,
+		Walk = 0,
+		Fire = 129841784532184,
+		ReloadTactical = 77706176424948,
+		ReloadEmpty = 77706176424948,
+		Equip = 137291357974383,
+		Unjam = 77706176424948,
 	},
 
-	-- Assets (Sounds & VFX) - Will be loaded from ReplicatedStorage > Assets > [GunName]
+	-- Assets (Sounds & VFX)
 	Assets = {
-		-- Sounds (either direct Sound instances or string names to find in Assets folder)
-		FireSound = "FireSound", -- Will look for Assets/Pistol/FireSound
+		FireSound = "FireSound",
 		ReloadSound = "ReloadSound",
 		EmptyClickSound = "EmptyClick",
 		ShellEjectSound = "ShellEject",
+		JamSound = "JamSound", -- Add jam sound asset
+		UnjamSound = "UnjamSound", -- Add unjam sound asset
 
-		-- VFX (Optional - leave nil to use defaults)
-		MuzzleFlash = "MuzzleFlash", -- Can be ParticleEmitter, Folder with effects, or path string
-		BulletTracer = nil, -- Custom beam or nil for default
-		HitEffect = nil, -- Custom hit particles or nil for default
-		ShellCasing = nil, -- Custom shell Part/MeshPart/Model or nil for default
+		MuzzleFlash = "MuzzleFlash",
+		BulletTracer = nil,
+		HitEffect = nil,
+		ShellCasing = nil,
 	},
 }
 
@@ -97,30 +107,22 @@ local PistolConfig = {
 --  PLAYER GUN MANAGEMENT
 -- ═══════════════════════════════════════════════════════════
 
--- Store gun instances per player
-local PlayerGuns = {} -- [Player] = {Gun = GunSystem, Tool = Tool}
+local PlayerGuns = {}
+local PlayerFireTimes = {}
 
--- Anti-exploit: Fire rate limiter per player
-local PlayerFireTimes = {} -- [Player] = lastFireTime
-
-local MIN_FIRE_INTERVAL = (60 / PistolConfig.FireRate) * 0.85 -- 15% tolerance
-
--- Tool name to look for
+local MIN_FIRE_INTERVAL = (60 / PistolConfig.FireRate) * 0.85
 local TOOL_NAME = "Pistol"
 
 -- Create gun for player
 local function createGunForPlayer(player, tool)
-	-- Clean up existing gun if any
 	if PlayerGuns[player] then
 		PlayerGuns[player].Gun:Unequip()
 		PlayerGuns[player] = nil
 	end
 
-	-- Create new gun instance
 	local gun = GunSystem.new(PistolConfig)
 	gun:Initialize(tool, player)
 
-	-- Store gun instance
 	PlayerGuns[player] = {
 		Gun = gun,
 		Tool = tool,
@@ -141,7 +143,6 @@ end
 
 -- Monitor tool equipped/unequipped
 local function setupToolMonitoring(player, tool)
-	-- Check if tool is equipped or in backpack
 	local equippedConnection
 	local unequippedConnection
 
@@ -159,7 +160,6 @@ local function setupToolMonitoring(player, tool)
 		end
 	end)
 
-	-- Clean up connections when tool is removed
 	tool.AncestryChanged:Connect(function()
 		if not tool:IsDescendantOf(game) then
 			equippedConnection:Disconnect()
@@ -169,12 +169,11 @@ local function setupToolMonitoring(player, tool)
 	end)
 end
 
--- Find pistol tool in player's backpack or character
+-- Find pistol tool
 local function findPistolTool(player)
 	local character = player.Character
 	local backpack = player:FindFirstChild("Backpack")
 
-	-- Check character first (equipped)
 	if character then
 		local tool = character:FindFirstChild(TOOL_NAME)
 		if tool and tool:IsA("Tool") then
@@ -182,7 +181,6 @@ local function findPistolTool(player)
 		end
 	end
 
-	-- Check backpack
 	if backpack then
 		local tool = backpack:FindFirstChild(TOOL_NAME)
 		if tool and tool:IsA("Tool") then
@@ -195,13 +193,10 @@ end
 
 -- Setup player
 local function setupPlayer(player)
-	-- Wait for character
 	local character = player.Character or player.CharacterAdded:Wait()
 
-	-- Wait a bit for tools to load
 	task.wait(0.5)
 
-	-- Look for pistol tool
 	local pistolTool = findPistolTool(player)
 
 	if pistolTool then
@@ -212,7 +207,6 @@ local function setupPlayer(player)
 		print("No Pistol found for " .. player.Name)
 	end
 
-	-- Monitor backpack for pistol being added
 	local backpack = player:WaitForChild("Backpack")
 	backpack.ChildAdded:Connect(function(child)
 		if child.Name == TOOL_NAME and child:IsA("Tool") then
@@ -222,7 +216,6 @@ local function setupPlayer(player)
 		end
 	end)
 
-	-- Monitor character for pistol being equipped
 	player.CharacterAdded:Connect(function(newCharacter)
 		task.wait(0.5)
 		local pistol = findPistolTool(player)
@@ -255,9 +248,8 @@ end
 --  REMOTE EVENT HANDLERS
 -- ═══════════════════════════════════════════════════════════
 
--- Handle fire requests from client
+-- Handle fire requests
 FireGunRemote.OnServerEvent:Connect(function(player, targetPosition)
-	-- Validate player has gun
 	local playerData = PlayerGuns[player]
 	if not playerData then
 		warn("Player " .. player.Name .. " tried to fire without gun!")
@@ -269,7 +261,6 @@ FireGunRemote.OnServerEvent:Connect(function(player, targetPosition)
 		return
 	end
 
-	-- Validate target position
 	if not targetPosition or typeof(targetPosition) ~= "Vector3" then
 		warn("Invalid target position from " .. player.Name)
 		return
@@ -290,9 +281,8 @@ FireGunRemote.OnServerEvent:Connect(function(player, targetPosition)
 	playerData.Gun:Fire(targetPosition)
 end)
 
--- Handle reload requests from client
+-- Handle reload requests
 ReloadGunRemote.OnServerEvent:Connect(function(player)
-	-- Validate player has gun
 	local playerData = PlayerGuns[player]
 	if not playerData then
 		return
@@ -301,11 +291,24 @@ ReloadGunRemote.OnServerEvent:Connect(function(player)
 		return
 	end
 
-	-- Reload the gun
 	playerData.Gun:Reload()
 end)
 
--- Update spread recovery for all active guns
+-- Handle unjam requests
+UnjamGunRemote.OnServerEvent:Connect(function(player)
+	local playerData = PlayerGuns[player]
+	if not playerData then
+		return
+	end
+	if not playerData.IsEquipped then
+		return
+	end
+
+	-- Unjam the gun
+	playerData.Gun:Unjam()
+end)
+
+-- Update spread recovery
 RunService.Heartbeat:Connect(function(deltaTime)
 	for player, data in pairs(PlayerGuns) do
 		if data.IsEquipped then
@@ -314,30 +317,15 @@ RunService.Heartbeat:Connect(function(deltaTime)
 	end
 end)
 
-print("Pistol Server Handler loaded successfully!")
-
--- ═══════════════════════════════════════════════════════════
---  NOTES
--- ═══════════════════════════════════════════════════════════
-
---[[
-	TO USE THIS SYSTEM:
-	
-	1. Place this script in ServerScriptService
-	2. Create a Tool named "Pistol" in StarterPack or ServerStorage
-	3. The tool should have:
-	   - Handle (Part)
-	   - GunMesh (MeshPart)
-	   - Muzzle (Part/Attachment) - at barrel tip
-	   - EjectionPort (Part/Attachment, optional) - at ejection port
-	
-	4. Give the tool to players (via StarterPack, game script, etc)
-	5. The system will automatically detect and setup the gun!
-	
-	TOOL HIERARCHY:
-	Pistol (Tool)
-	├── Handle (Part)
-	├── GunMesh (MeshPart)
-	├── Muzzle (Part) - Position at barrel end
-	└── EjectionPort (Part, optional) - Position at ejection port
-]]
+print(
+	"═══════════════════════════════════════════"
+)
+print("🔫 Pistol Server Handler - UPDATED")
+print(
+	"═══════════════════════════════════════════"
+)
+print("✅ Gun Jamming System Enabled")
+print("✅ Unjam Remote Handler Active")
+print(
+	"═══════════════════════════════════════════"
+)
