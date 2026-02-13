@@ -2,33 +2,29 @@
   "name": "gun-system",
   "tree": {
     "$className": "DataModel",
-
-    "ReplicatedStorage": {
-     "$path": "src/ReplicatedStorage"
-    },
-
-
-    "ServerScriptService": {
-      "$path": "src/ServerScriptService"
-    },
-
-    "ServerStorage": {
-      "$path": "src/ServerStorage"
-    },
-
-    "StarterPlayer": {
-      "StarterPlayerScripts": {
-        "$path": "src/StarterPlayer/StarterPlayerScripts"
-      },
-      "StarterCharacterScripts": {
-        "$path": "src/StarterPlayer/StarterCharacterScripts"
-      }
-    },
-
     "ReplicatedFirst": {
       "$path": "src/ReplicatedFirst"
     },
-
-    "SoundService": {}
+    "ReplicatedStorage": {
+      "$path": "src/ReplicatedStorage"
+    },
+    "ServerScriptService": {
+      "$path": "src/ServerScriptService"
+    },
+    "ServerStorage": {
+      "$path": "src/ServerStorage"
+    },
+    "SoundService": {},
+    "StarterPlayer": {
+      "StarterCharacterScripts": {
+        "$path": "src/StarterPlayer/StarterCharacterScripts"
+      },
+      "StarterPlayerScripts": {
+        "$path": "src/StarterPlayer/StarterPlayerScripts"
+      },
+      "$properties": {
+        "EnableMouseLockOption": false
+      }
+    }
   }
 }
