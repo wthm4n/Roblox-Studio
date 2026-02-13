@@ -49,13 +49,13 @@ local PistolConfig = {
 	-- Recoil Pattern (Vertical, Horizontal)
 	-- Pistols have more vertical recoil
 	RecoilPattern = {
-		{ 0.55, 0.12 }, -- Shot 1 - Strong kick
-		{ 0.60, -0.10 }, -- Shot 2
-		{ 0.58, 0.15 }, -- Shot 3
-		{ 0.62, -0.13 }, -- Shot 4
-		{ 0.65, 0.18 }, -- Shot 5
-		{ 0.63, -0.12 }, -- Shot 6
-		{ 0.60, 0.14 }, -- Shot 7
+		{ 0.8, 0.15 }, -- Shot 1 - Good kick upward
+		{ 0.9, -0.12 }, -- Shot 2
+		{ 0.85, 0.18 }, -- Shot 3
+		{ 0.95, -0.15 }, -- Shot 4
+		{ 1.0, 0.20 }, -- Shot 5 - Bigger kick
+		{ 0.95, -0.13 }, -- Shot 6
+		{ 0.90, 0.16 }, -- Shot 7
 	},
 	RecoilRecovery = 0.15,
 
