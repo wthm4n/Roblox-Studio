@@ -1,6 +1,11 @@
 --[[
-	GunSystem Module
+	GunSystem Module - UPDATED WITH JAMMING
 	Main gun system handler - Place in ReplicatedStorage
+	
+	NEW FEATURES:
+	✅ Gun jamming system
+	✅ Unjam mechanic (F key)
+	✅ Jam status tracking
 	
 	Handles:
 	- Gun creation and initialization
@@ -9,6 +14,7 @@
 	- Magazine and ammo management
 	- Fire rate control
 	- Recoil patterns
+	- Gun jamming & unjamming
 	- Server-to-client communication for VFX
 ]]
 
@@ -44,6 +50,8 @@ local function getOrCreateRemotes()
 		UpdateAmmo = getOrCreateRemote("UpdateAmmo", "RemoteEvent"),
 		EquipGun = getOrCreateRemote("EquipGun", "RemoteEvent"),
 		UnequipGun = getOrCreateRemote("UnequipGun", "RemoteEvent"),
+		UnjamGun = getOrCreateRemote("UnjamGun", "RemoteEvent"),
+		UpdateGunStatus = getOrCreateRemote("UpdateGunStatus", "RemoteEvent"),
 	}
 end
 
@@ -69,6 +77,13 @@ local DEFAULT_CONFIG = {
 	ReserveAmmo = 90,
 	ReloadTimeTactical = 2.0, -- reload with bullet in chamber
 	ReloadTimeEmpty = 2.5, -- reload from empty
+
+	-- Jamming System
+	JamEnabled = true, -- Enable/disable jamming
+	JamChancePerShot = 0.015, -- 1.5% chance per shot
+	JamChanceIncreasePerShot = 0.001, -- Increases with consecutive shots
+	MaxJamChance = 0.08, -- Max 8% jam chance
+	UnjamTime = 1.5, -- Time to unjam (seconds)
 
 	-- Recoil Pattern (vertical, horizontal)
 	RecoilPattern = {
@@ -101,6 +116,8 @@ local DEFAULT_CONFIG = {
 		Fire = 0,
 		ReloadTactical = 0,
 		ReloadEmpty = 0,
+		Equip = 0,
+		Unjam = 0,
 	},
 
 	-- Gun Info
@@ -114,6 +131,8 @@ local DEFAULT_CONFIG = {
 		ReloadSound = nil,
 		EmptyClickSound = nil,
 		ShellEjectSound = nil,
+		JamSound = nil,
+		UnjamSound = nil,
 
 		-- VFX (Optional - override defaults)
 		MuzzleFlash = nil, -- ParticleEmitter or path to particle
@@ -145,10 +164,14 @@ function GunSystem.new(config)
 	self.CurrentAmmo = self.Config.MagazineSize
 	self.ReserveAmmo = self.Config.ReserveAmmo
 	self.IsReloading = false
+	self.IsJammed = false
+	self.IsUnjamming = false
 	self.LastFireTime = 0
 	self.CurrentRecoilIndex = 1
 	self.CurrentSpread = self.Config.BaseSpread
 	self.BurstShotsFired = 0
+	self.ConsecutiveShots = 0 -- Track shots for jam chance increase
+	self.CurrentJamChance = self.Config.JamChancePerShot
 
 	-- Calculate fire delay from RPM
 	self.FireDelay = 60 / self.Config.FireRate
@@ -183,10 +206,101 @@ function GunSystem:Initialize(tool, player)
 	-- Reset ammo to full on equip
 	self.CurrentAmmo = self.Config.MagazineSize
 	self.IsReloading = false
+	self.IsJammed = false
+	self.IsUnjamming = false
+	self.ConsecutiveShots = 0
+	self.CurrentJamChance = self.Config.JamChancePerShot
 
 	-- Send equip event to client
 	Remotes.EquipGun:FireClient(player, self.Config)
 	self:UpdateAmmoUI()
+	self:UpdateGunStatus()
+end
+
+-- Update gun status (ammo, jam, etc)
+function GunSystem:UpdateGunStatus()
+	if not self.Player then
+		return
+	end
+
+	local status = "Ready"
+	if self.IsJammed then
+		status = "Jammed"
+	elseif self.IsUnjamming then
+		status = "Unjamming"
+	elseif self.IsReloading then
+		status = "Reloading"
+	elseif self.CurrentAmmo <= 0 then
+		status = "NoAmmo"
+	end
+
+	Remotes.UpdateGunStatus:FireClient(self.Player, {
+		Status = status,
+		CanFire = not self.IsJammed and not self.IsReloading and not self.IsUnjamming and self.CurrentAmmo > 0,
+		IsJammed = self.IsJammed,
+		CurrentAmmo = self.CurrentAmmo,
+		ReserveAmmo = self.ReserveAmmo,
+	})
+end
+
+-- Check if gun jams
+function GunSystem:CheckJam()
+	if not self.Config.JamEnabled then
+		return false
+	end
+
+	-- Random jam check
+	local jamRoll = math.random()
+	if jamRoll < self.CurrentJamChance then
+		self.IsJammed = true
+
+		-- Send jam event to client
+		Remotes.PlayEffect:FireClient(self.Player, "Jam")
+		self:UpdateGunStatus()
+
+		print(self.Player.Name .. "'s gun jammed! (Chance was " .. (self.CurrentJamChance * 100) .. "%)")
+		return true
+	end
+
+	-- Increase jam chance for next shot
+	self.ConsecutiveShots = self.ConsecutiveShots + 1
+	self.CurrentJamChance =
+		math.min(self.CurrentJamChance + self.Config.JamChanceIncreasePerShot, self.Config.MaxJamChance)
+
+	return false
+end
+
+-- Unjam the gun
+function GunSystem:Unjam()
+	if not self.IsJammed then
+		return false
+	end
+
+	if self.IsUnjamming then
+		return false
+	end
+
+	self.IsUnjamming = true
+	self:UpdateGunStatus()
+
+	-- Send unjam event to client
+	Remotes.PlayEffect:FireClient(self.Player, "Unjam", {
+		UnjamTime = self.Config.UnjamTime,
+	})
+
+	-- Wait for unjam
+	task.wait(self.Config.UnjamTime)
+
+	-- Clear jam
+	self.IsJammed = false
+	self.IsUnjamming = false
+	self.ConsecutiveShots = 0
+	self.CurrentJamChance = self.Config.JamChancePerShot
+
+	self:UpdateGunStatus()
+
+	print(self.Player.Name .. " unjammed their gun!")
+	return true
 end
 
 -- Fire the gun
@@ -201,13 +315,18 @@ function GunSystem:Fire(targetPosition)
 		return false
 	end
 
-	if self.IsReloading then
+	if self.IsReloading or self.IsJammed or self.IsUnjamming then
+		if self.IsJammed then
+			-- Play jam click sound
+			Remotes.PlayEffect:FireClient(self.Player, "JamClick")
+		end
 		return false
 	end
 
 	if self.CurrentAmmo <= 0 then
 		-- Play empty click sound
 		Remotes.PlayEffect:FireClient(self.Player, "EmptyClick")
+		self:UpdateGunStatus()
 		return false
 	end
 
@@ -229,6 +348,9 @@ function GunSystem:Fire(targetPosition)
 
 	-- Perform raycast
 	local hitResult = self:PerformRaycast(targetPosition)
+
+	-- Check for jam AFTER successful shot
+	self:CheckJam()
 
 	-- Update recoil index
 	self.CurrentRecoilIndex = self.CurrentRecoilIndex + 1
@@ -255,8 +377,9 @@ function GunSystem:Fire(targetPosition)
 		Spread = self.CurrentSpread,
 	})
 
-	-- Update ammo UI
+	-- Update ammo UI and status
 	self:UpdateAmmoUI()
+	self:UpdateGunStatus()
 
 	return true
 end
@@ -308,20 +431,47 @@ function GunSystem:PerformRaycast(targetPosition)
 		local distance = (origin - rayResult.Position).Magnitude
 		local damage = self:CalculateDamage(distance)
 
-		-- Check for headshot
+		-- Check for headshot or body part
 		local isHeadshot = false
+		local bodyPart = "Body"
 		if rayResult.Instance and rayResult.Instance.Parent then
 			local humanoid = rayResult.Instance.Parent:FindFirstChildOfClass("Humanoid")
-			if humanoid and rayResult.Instance.Name == "Head" then
-				isHeadshot = true
-				damage = damage * self.Config.HeadshotMultiplier
-			end
+			if humanoid then
+				-- Check body part
+				if rayResult.Instance.Name == "Head" then
+					isHeadshot = true
+					bodyPart = "Head"
+					damage = damage * self.Config.HeadshotMultiplier
+				elseif rayResult.Instance.Name == "UpperTorso" or rayResult.Instance.Name == "Torso" then
+					bodyPart = "Torso"
+				elseif
+					rayResult.Instance.Name == "LeftUpperArm"
+					or rayResult.Instance.Name == "LeftLowerArm"
+					or rayResult.Instance.Name == "RightUpperArm"
+					or rayResult.Instance.Name == "RightLowerArm"
+					or rayResult.Instance.Name == "Left Arm"
+					or rayResult.Instance.Name == "Right Arm"
+				then
+					bodyPart = "Arm"
+				elseif
+					rayResult.Instance.Name == "LeftUpperLeg"
+					or rayResult.Instance.Name == "LeftLowerLeg"
+					or rayResult.Instance.Name == "RightUpperLeg"
+					or rayResult.Instance.Name == "RightLowerLeg"
+					or rayResult.Instance.Name == "Left Leg"
+					or rayResult.Instance.Name == "Right Leg"
+				then
+					bodyPart = "Leg"
+				end
 
-			-- Apply damage
-			if humanoid and humanoid.Health > 0 then
-				humanoid:TakeDamage(damage)
-				hitResult.Damage = damage
-				hitResult.IsHeadshot = isHeadshot
+				-- Apply damage
+				if humanoid.Health > 0 then
+					humanoid:TakeDamage(damage)
+					hitResult.Damage = damage
+					hitResult.IsHeadshot = isHeadshot
+					hitResult.BodyPart = bodyPart
+					hitResult.HumanoidRootPart = rayResult.Instance.Parent:FindFirstChild("HumanoidRootPart")
+				end
 			end
 		end
 	end
@@ -353,6 +503,9 @@ function GunSystem:Reload()
 	if self.IsReloading then
 		return false
 	end
+	if self.IsJammed or self.IsUnjamming then
+		return false
+	end
 	if self.CurrentAmmo == self.Config.MagazineSize then
 		return false
 	end
@@ -361,6 +514,7 @@ function GunSystem:Reload()
 	end
 
 	self.IsReloading = true
+	self:UpdateGunStatus()
 
 	-- Determine reload time (tactical vs empty)
 	local reloadTime = self.CurrentAmmo > 0 and self.Config.ReloadTimeTactical or self.Config.ReloadTimeEmpty
@@ -386,12 +540,15 @@ function GunSystem:Reload()
 
 	self.IsReloading = false
 
-	-- Reset recoil
+	-- Reset recoil and jam chance
 	self.CurrentRecoilIndex = 1
 	self.CurrentSpread = self.Config.BaseSpread
+	self.ConsecutiveShots = 0
+	self.CurrentJamChance = self.Config.JamChancePerShot
 
-	-- Update UI
+	-- Update UI and status
 	self:UpdateAmmoUI()
+	self:UpdateGunStatus()
 
 	return true
 end
