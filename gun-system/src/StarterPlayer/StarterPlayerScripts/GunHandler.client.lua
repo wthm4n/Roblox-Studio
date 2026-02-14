@@ -313,7 +313,7 @@ local function getStatusLabel()
 		return nil
 	end
 	
-	local guiPart = EquippedTool:FindFirstChild("GuiPart")
+	local guiPart = EquippedTool.Handle:FindFirstChild("GuiPart")
 	if not guiPart then
 		return nil
 	end
@@ -751,7 +751,7 @@ local function createMuzzleFlash(muzzlePart)
 	if VFXAssets.MuzzleFlash then
 		local customFlash = VFXAssets.MuzzleFlash
 
-		if customFlash:IsA("ParticleEmitter") then
+		if customFlash:IsA("ParticleEmitter")then
 			local particle = customFlash:Clone()
 			particle.Parent = muzzlePart
 			particle:Emit(particle:GetAttribute("EmitCount") or 5)
@@ -812,96 +812,142 @@ local function createMuzzleFlash(muzzlePart)
 end
 
 local function createBulletProjectile(startPos, endPos)
-	-- Create the actual bullet part
+
+	-- === BULLET CORE ===
 	local bullet = Instance.new("Part")
-	bullet.Name = "Bullet"
-	bullet.Size = Vector3.new(0.2, 0.2, 0.5) -- Small bullet shape
-	bullet.Material = Enum.Material.Metal
-	bullet.Color = Color3.fromRGB(255, 220, 100) -- Golden bullet
+	bullet.Name = "MeteorBullet"
+	bullet.Size = Vector3.new(0.25, 0.25, 0.6)
+	bullet.Material = Enum.Material.Neon
+	bullet.Color = Color3.fromRGB(255, 170, 60)
 	bullet.CanCollide = false
 	bullet.CastShadow = false
 	bullet.Anchored = true
-	bullet.Shape = Enum.PartType.Ball
+	bullet.Shape = Enum.PartType.Cylinder
 	
-	-- Position bullet at start
-	bullet.CFrame = CFrame.new(startPos, endPos)
+	local direction = (endPos - startPos).Unit
+	bullet.CFrame = CFrame.new(startPos, endPos) * CFrame.Angles(0, math.pi/2, 0)
 	bullet.Parent = workspace
 
-	-- Add attachment for trail
-	local attachment = Instance.new("Attachment")
-	attachment.Parent = bullet
-
-	-- Create trail effect
-	local trail = Instance.new("Trail")
-	trail.Attachment0 = attachment
-	trail.Attachment1 = attachment
-	trail.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 200, 100)), -- Yellow-orange at start
-		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 150, 50)), -- Orange in middle
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 100, 0)) -- Red-orange at end
-	})
-	trail.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.3), -- More visible at start
-		NumberSequenceKeypoint.new(1, 1) -- Fade out at end
-	})
-	trail.Lifetime = 0.3 -- How long trail segments last
-	trail.MinLength = 0.05
-	trail.FaceCamera = true
-	trail.WidthScale = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(1, 0.5) -- Taper at the end
-	})
-	trail.Brightness = 2
-	trail.LightEmission = 0.8
-	trail.Parent = bullet
-
-	-- Add glow effect (PointLight)
+	-- === GLOW LIGHT ===
 	local light = Instance.new("PointLight")
-	light.Color = Color3.fromRGB(255, 200, 100)
-	light.Brightness = 3
-	light.Range = 8
+	light.Color = Color3.fromRGB(255, 140, 50)
+	light.Brightness = 8
+	light.Range = 18
 	light.Shadows = false
 	light.Parent = bullet
 
-	-- Calculate flight duration and speed
+	-- === FIRE TRAIL (METEOR CORE FLAME) ===
+	local fire = Instance.new("ParticleEmitter")
+	fire.Texture = "rbxassetid://243660364"
+	fire.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 240, 200)),
+		ColorSequenceKeypoint.new(0.3, Color3.fromRGB(255, 150, 60)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 40, 0))
+	})
+	fire.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.2),
+		NumberSequenceKeypoint.new(0.5, 0.5),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	fire.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.7),
+		NumberSequenceKeypoint.new(1, 2)
+	})
+	fire.Lifetime = NumberRange.new(0.2, 0.35)
+	fire.Rate = 300
+	fire.Speed = NumberRange.new(0, 0)
+	fire.SpreadAngle = Vector2.new(10, 10)
+	fire.Drag = 6
+	fire.LightEmission = 1
+	fire.Parent = bullet
+
+	-- === SMOKE TAIL ===
+	local smoke = Instance.new("ParticleEmitter")
+	smoke.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	smoke.Color = ColorSequence.new(Color3.fromRGB(60, 60, 60))
+	smoke.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.4),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	smoke.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.8),
+		NumberSequenceKeypoint.new(1, 2.8)
+	})
+	smoke.Lifetime = NumberRange.new(0.3, 0.5)
+	smoke.Rate = 120
+	smoke.Speed = NumberRange.new(0, 0)
+	smoke.Drag = 8
+	smoke.Parent = bullet
+
+	-- === MOVEMENT ===
 	local distance = (endPos - startPos).Magnitude
-	local bulletSpeed = 500 -- studs per second (adjust for slower/faster bullets)
+	local bulletSpeed = 800
 	local travelTime = distance / bulletSpeed
 
-	-- Animate bullet flying
 	local startTime = tick()
 	local connection
-	connection = RunService.Heartbeat:Connect(function()
+	connection = game:GetService("RunService").Heartbeat:Connect(function()
+
 		local elapsed = tick() - startTime
 		local alpha = math.min(elapsed / travelTime, 1)
 
 		if alpha >= 1 then
-			-- Bullet reached target
 			connection:Disconnect()
-			
-			-- Fade out effect
+			fire.Enabled = false
+			smoke.Enabled = false
+
+			-- Impact flash
+			local flash = Instance.new("Part")
+			flash.Size = Vector3.new(1, 1, 1)
+			flash.Transparency = 0.4
+			flash.Material = Enum.Material.Neon
+			flash.Color = Color3.fromRGB(255, 200, 120)
+			flash.Anchored = true
+			flash.CanCollide = false
+			flash.Shape = Enum.PartType.Ball
+			flash.CFrame = CFrame.new(endPos)
+			flash.Parent = workspace
+
+			local impactLight = Instance.new("PointLight")
+			impactLight.Color = flash.Color
+			impactLight.Brightness = 12
+			impactLight.Range = 20
+			impactLight.Parent = flash
+
 			task.spawn(function()
 				for i = 1, 10 do
-					bullet.Transparency = i / 10
-					light.Brightness = 3 * (1 - i / 10)
+					flash.Transparency += 0.06
+					flash.Size += Vector3.new(0.4, 0.4, 0.4)
+					impactLight.Brightness *= 0.8
 					task.wait(0.02)
 				end
-				bullet:Destroy()
+				flash:Destroy()
 			end)
+
+			task.delay(0.2, function()
+				if bullet then
+					bullet:Destroy()
+				end
+			end)
+
 			return
 		end
 
-		-- Interpolate position
-		local currentPos = startPos:Lerp(endPos, alpha)
-		bullet.CFrame = CFrame.new(currentPos, endPos)
+		local eased = alpha * alpha * (3 - 2 * alpha)
+		local currentPos = startPos:Lerp(endPos, eased)
+		bullet.CFrame = CFrame.new(currentPos, endPos) * CFrame.Angles(0, math.pi/2, 0)
+
+		-- Pulsing glow
+		light.Brightness = 8 + math.sin(tick() * 40) * 2
 	end)
 
-	-- Safety cleanup after max time
-	task.delay(travelTime + 1, function()
+	task.delay(travelTime + 2, function()
 		if bullet and bullet.Parent then
 			bullet:Destroy()
 		end
 	end)
+
+	return bullet
 end
 
 local function createHitEffect(position, normal, material, isHeadshot)
@@ -1232,7 +1278,7 @@ PlayEffectRemote.OnClientEvent:Connect(function(effectType, data)
 	if effectType == "Fire" then
 		playAnimation("Fire", 0.05)
 
-		local muzzle = EquippedTool and EquippedTool:FindFirstChild("Muzzle")
+		local muzzle = EquippedTool and EquippedTool.Handle:FindFirstChild("Muzzle")
 		local ejectionPort = EquippedTool and EquippedTool:FindFirstChild("EjectionPort") or muzzle
 
 		if muzzle then
