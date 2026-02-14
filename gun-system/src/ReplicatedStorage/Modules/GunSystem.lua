@@ -196,7 +196,7 @@ function GunSystem:Initialize(tool, player)
 
 	-- Get gun parts
 	self.Handle = tool:FindFirstChild("Handle")
-	self.Muzzle = tool:FindFirstChild("Muzzle")
+	self.Muzzle = tool.Handle:FindFirstChild("Muzzle")
 	self.EjectionPort = tool:FindFirstChild("EjectionPort") or self.Muzzle
 
 	if not self.Muzzle then
