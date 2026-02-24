@@ -7,7 +7,7 @@ local Players             = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage       = game:GetService("ServerStorage")
 
-local NPCAIService = require(ServerScriptService.:WaitForChild("NPCAIService"))
+local NPCAIService = require(ServerScriptService.NPC:WaitForChild("NPCAIService"))
 
 -- ══════════════════════════════════════════════════════════════════
 --  YOUR CUSTOM SETTINGS (all optional — just override what you want)
