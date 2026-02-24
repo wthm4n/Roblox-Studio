@@ -56,11 +56,12 @@ local DEFAULT_CONFIG = {
 	agentCanJump        = true,
 	agentCanClimb       = true,
 	materialCosts       = {
-		[Enum.Material.Water]    = 5,
-		[Enum.Material.Sand]     = 2,
-		[Enum.Material.Mud]      = 3,
-		[Enum.Material.Ice]      = 2,
-		-- kill parts handled via CanTraverse callback
+		[Enum.Material.Water]     = 5,
+		[Enum.Material.Sand]      = 2,
+		[Enum.Material.Mud]       = 3,
+		[Enum.Material.Ice]       = 2,
+		-- NOTE: Lava avoidance is handled via KillPart detection in SensorModule
+		-- not via material cost (Enum.Material.Lava does not exist in Roblox)
 	},
 
 	-- Health-based dynamic behavior thresholds (% of maxHealth)
