@@ -9,7 +9,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local NPCAIService = require(ServerScriptService:WaitForChild("NPCAIService"))
 
 -- ─── CONFIG ───────────────────────────────────────────────────────────────────
-local NPC_TEMPLATE_NAME = "A"   -- Name of your NPC model in Workspace or ServerStorage
+local NPC_TEMPLATE_NAME = "Agg"   -- Name of your NPC model in Workspace or ServerStorage
 local SPAWN_POSITION    = Vector3.new(0, 5, 0)
 
 -- ─── HELPERS ─────────────────────────────────────────────────────────────────
