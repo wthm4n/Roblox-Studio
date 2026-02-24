@@ -1,262 +1,233 @@
 -- NPCAIService.lua
--- ModuleScript → Place inside ServerScriptService
--- Usage: local AI = require(NPCAIService).new(npcModel, targetPlayer, settingsTable)
+-- ModuleScript → ServerScriptService
+-- require(NPCAIService).new(npcModel, targetPlayer, settings?)
+-- OR shorthand: require(NPCAIService)(npcModel, targetPlayer, settings?)
 
 local PathfindingService = game:GetService("PathfindingService")
-local RunService          = game:GetService("RunService")
-local Players             = game:GetService("Players")
-local TweenService        = game:GetService("TweenService")
+local RunService         = game:GetService("RunService")
+local TweenService       = game:GetService("TweenService")
 
-local NPCAIService = {}
-NPCAIService.__index = NPCAIService
+-- ════════════════════════════════════════════════════
+--  MODULE
+-- ════════════════════════════════════════════════════
+local AI = {}
+AI.__index = AI
 
---[[
-╔══════════════════════════════════════════════════════════════════════╗
-║                       DEFAULT SETTINGS                               ║
-║  Pass a custom table into .new() to override any of these.           ║
-╚══════════════════════════════════════════════════════════════════════╝
-]]
-NPCAIService.DefaultSettings = {
+-- ════════════════════════════════════════════════════
+--  DEFAULT SETTINGS
+-- ════════════════════════════════════════════════════
+AI.Defaults = {
+	-- Follow
+	FollowRange      = 999,   -- start chasing within this many studs
+	StopDistance     = 5,     -- stop when this close to player
+	LoseRange        = 999,   -- give up if player goes beyond this
 
-	-- ┌─ FOLLOW RANGE ──────────────────────────────────────────────────┐
-	FollowRange       = 100,   -- studs: NPC starts chasing within this range
-	StopDistance      = 4,     -- studs: NPC stops when this close to player
-	LoseTargetRange   = 130,   -- studs: NPC gives up chasing past this range
+	-- Speed
+	WalkSpeed        = 16,
+	RunSpeed         = 26,
+	RunThreshold     = 30,    -- studs: switch to RunSpeed past this distance
+	CrouchSpeed      = 6,
+	SwimSpeed        = 10,
 
-	-- ┌─ SPEEDS ────────────────────────────────────────────────────────┐
-	WalkSpeed         = 16,    -- normal follow speed
-	RunSpeed          = 28,    -- speed when player is far (past RunThreshold)
-	RunThreshold      = 30,    -- studs away to trigger run speed
-	CrouchSpeed       = 6,     -- speed while crouching under obstacle
-	SwimSpeed         = 10,    -- speed while swimming
-	ClimbSpeed        = 8,     -- speed on steep slopes
+	-- Abilities
+	CanJump          = true,
+	JumpPower        = 50,
+	CanSwim          = true,
+	SwimStrokeRate   = 0.65,  -- seconds between swim jump-strokes
+	CanCrouch        = true,
+	CrouchGap        = 4,     -- studs of clearance overhead that triggers crouch
 
-	-- ┌─ JUMP ──────────────────────────────────────────────────────────┐
-	CanJump           = true,
-	JumpPower         = 50,
+	-- Pathfinding
+	RecalcRate       = 0.2,   -- seconds between path recalculations
+	WpReach          = 3.5,   -- studs to count waypoint as reached
+	AgentHeight      = 5,
+	AgentRadius      = 2,
 
-	-- ┌─ SWIM ──────────────────────────────────────────────────────────┐
-	CanSwim           = true,
-	SwimStrokeRate    = 0.6,   -- seconds between swim strokes (jump pulses)
+	-- Stuck recovery
+	StuckTime        = 2,     -- seconds before NPC is considered stuck
+	StuckJumpMax     = 3,     -- jump attempts before forcing a repath
 
-	-- ┌─ CLIMB ─────────────────────────────────────────────────────────┐
-	CanClimb          = true,
-	ClimbAngleMin     = 42,    -- degrees of incline to trigger climb mode
-
-	-- ┌─ CROUCH ────────────────────────────────────────────────────────┐
-	CanCrouch         = true,
-	CrouchTriggerGap  = 4,     -- studs above NPC head that triggers crouch
-
-	-- ┌─ PATHFINDING ───────────────────────────────────────────────────┐
-	RecalcRate        = 0.15,  -- seconds between path recalculations
-	WaypointRadius    = 3,     -- studs to count a waypoint as reached
-	AgentHeight       = 5,
-	AgentRadius       = 2,
-
-	-- ┌─ STUCK RECOVERY ────────────────────────────────────────────────┐
-	StuckTimeout      = 2.0,   -- seconds motionless before "stuck"
-	StuckJumpMax      = 3,     -- jumps before force-repath
-
-	-- ┌─ PATH VISUALIZER ───────────────────────────────────────────────┐
-	ShowPath          = true,
-	BallColor         = Color3.fromRGB(168, 0, 255),   -- core purple
-	BallGlow          = Color3.fromRGB(210, 100, 255), -- glow tint
-	BallSize          = 0.55,
-	BallFadeTime      = 0.25,
-	GlowBrightness    = 4,
-	GlowRange         = 9,
+	-- Path balls (purple glow)
+	ShowPath         = true,
+	BallColor        = Color3.fromRGB(160, 0, 255),
+	BallGlow         = Color3.fromRGB(200, 90, 255),
+	BallSize         = 0.5,
+	BallPulse        = 0.5,   -- pulse animation duration
+	GlowBright       = 5,
+	GlowRange        = 10,
 }
 
--- ══════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════
 --  CONSTRUCTOR
--- ══════════════════════════════════════════════════════════════════════
-function NPCAIService.new(npcModel, targetPlayer, customSettings)
-	assert(npcModel and npcModel:IsA("Model"), "[NPCAIService] npcModel must be a Model")
-	assert(npcModel.PrimaryPart,               "[NPCAIService] npcModel must have a PrimaryPart set")
+-- ════════════════════════════════════════════════════
+function AI.new(npcModel, targetPlayer, customSettings)
+	assert(npcModel and npcModel:IsA("Model"),  "NPCAIService: npcModel must be a Model")
+	assert(npcModel.PrimaryPart,                "NPCAIService: PrimaryPart must be set (HumanoidRootPart)")
 	local hum = npcModel:FindFirstChildOfClass("Humanoid")
-	assert(hum,                                "[NPCAIService] npcModel must have a Humanoid")
+	assert(hum,                                 "NPCAIService: Model needs a Humanoid")
 
-	-- Merge settings
+	-- Merge defaults + custom
 	local S = {}
-	for k, v in pairs(NPCAIService.DefaultSettings) do S[k] = v end
+	for k, v in pairs(AI.Defaults) do S[k] = v end
 	if customSettings then
 		for k, v in pairs(customSettings) do S[k] = v end
 	end
 
-	local self      = setmetatable({}, NPCAIService)
-	self.npc        = npcModel
-	self.root       = npcModel.PrimaryPart
-	self.humanoid   = hum
-	self.target     = targetPlayer
-	self.settings   = S
-	self.active     = true
-	self.state      = "idle"
+	local self          = setmetatable({}, AI)
+	self.npc            = npcModel
+	self.root           = npcModel.PrimaryPart
+	self.hum            = hum
+	self.target         = targetPlayer
+	self.S              = S
+	self.active         = true
+	self.state          = "idle"
 
-	self._waypoints  = {}
-	self._wpIndex    = 1
-	self._balls      = {}
-	self._pathFolder = nil
-	self._timer      = 0
-	self._swimTimer  = 0
-	self._stuckSecs  = 0
-	self._stuckJumps = 0
-	self._lastPos    = self.root.Position
-	self._conns      = {}
+	-- Internal
+	self._wps           = {}
+	self._wpi           = 1
+	self._balls         = {}
+	self._folder        = nil
+	self._t             = 0
+	self._swimT         = 0
+	self._stuckT        = 0
+	self._stuckJ        = 0
+	self._lastPos       = self.root.Position
+	self._conns         = {}
 
-	hum.WalkSpeed = S.WalkSpeed
-	hum.JumpPower = S.JumpPower
+	-- KEY: these three lines make truss climbing work.
+	-- Roblox auto-climbs TrussParts when the Humanoid touches one
+	-- while facing it and walking. We just need to make sure these are set.
+	hum.WalkSpeed       = S.WalkSpeed
+	hum.JumpPower       = S.JumpPower
+	hum.AutoRotate      = true   -- must be true for engine climb to engage
 
-	-- Folder to hold visualizer parts
-	local folder = Instance.new("Folder")
-	folder.Name   = "NPC_Path_" .. npcModel.Name
-	folder.Parent = workspace
-	self._pathFolder = folder
+	-- Visualizer folder
+	local f = Instance.new("Folder")
+	f.Name   = "AIPath_" .. npcModel.Name
+	f.Parent = workspace
+	self._folder = f
 
-	self:_loop()
+	self:_run()
 	return self
 end
 
--- ══════════════════════════════════════════════════════════════════════
---  PATH VISUALIZER
--- ══════════════════════════════════════════════════════════════════════
-function NPCAIService:_clearBalls()
+-- ════════════════════════════════════════════════════
+--  VISUALIZER
+-- ════════════════════════════════════════════════════
+function AI:_clearBalls()
 	for _, b in ipairs(self._balls) do
 		if b and b.Parent then b:Destroy() end
 	end
 	self._balls = {}
 end
 
-function NPCAIService:_fadeBall(ball)
-	if not ball or not ball.Parent then return end
-	local tw = TweenService:Create(ball, TweenInfo.new(self.settings.BallFadeTime), { Transparency = 1, Size = Vector3.new(0.05, 0.05, 0.05) })
-	tw.Completed:Connect(function() if ball.Parent then ball:Destroy() end end)
+function AI:_fadeBall(b)
+	if not b or not b.Parent then return end
+	local tw = TweenService:Create(b, TweenInfo.new(self.S.BallPulse),
+		{ Transparency = 1, Size = Vector3.new(0.05,0.05,0.05) })
+	tw.Completed:Connect(function() if b.Parent then b:Destroy() end end)
 	tw:Play()
 end
 
-function NPCAIService:_buildBalls(waypoints)
+function AI:_makeBalls(wps)
 	self:_clearBalls()
-	if not self.settings.ShowPath then return end
-	local S = self.settings
-	for i = 2, #waypoints do
-		local pos = waypoints[i].Position
+	if not self.S.ShowPath then return end
+	local S = self.S
+	for i = 2, #wps do
+		local b = Instance.new("Part")
+		b.Name        = "AIWaypoint"
+		b.Shape       = Enum.PartType.Ball
+		b.Size        = Vector3.new(S.BallSize, S.BallSize, S.BallSize)
+		b.Position    = wps[i].Position
+		b.Anchored    = true
+		b.CanCollide  = false
+		b.CastShadow  = false
+		b.Material    = Enum.Material.Neon
+		b.Color       = S.BallColor
+		b.Parent      = self._folder
 
-		local ball = Instance.new("Part")
-		ball.Name        = "NPCWaypoint"
-		ball.Shape       = Enum.PartType.Ball
-		ball.Size        = Vector3.new(S.BallSize, S.BallSize, S.BallSize)
-		ball.Position    = pos
-		ball.Anchored    = true
-		ball.CanCollide  = false
-		ball.CastShadow  = false
-		ball.Material    = Enum.Material.Neon
-		ball.Color       = S.BallColor
-		ball.Transparency = 0
-		ball.Parent      = self._pathFolder
+		local pl = Instance.new("PointLight")
+		pl.Color      = S.BallGlow
+		pl.Brightness = S.GlowBright
+		pl.Range      = S.GlowRange
+		pl.Parent     = b
 
-		-- Point light for glow
-		local light = Instance.new("PointLight")
-		light.Color      = S.BallGlow
-		light.Brightness = S.GlowBrightness
-		light.Range      = S.GlowRange
-		light.Parent     = ball
-
-		-- Pulse animation
-		TweenService:Create(ball,
-			TweenInfo.new(0.55, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-			{ Size = Vector3.new(S.BallSize * 1.6, S.BallSize * 1.6, S.BallSize * 1.6) }
+		-- Pulse tween
+		TweenService:Create(b,
+			TweenInfo.new(S.BallPulse, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{ Size = Vector3.new(S.BallSize*1.7, S.BallSize*1.7, S.BallSize*1.7) }
 		):Play()
 
-		self._balls[i - 1] = ball
+		self._balls[i-1] = b
 	end
 end
 
--- ══════════════════════════════════════════════════════════════════════
---  ENVIRONMENT DETECTION
--- ══════════════════════════════════════════════════════════════════════
-function NPCAIService:_inWater()
-	if self.humanoid.FloorMaterial == Enum.Material.Water then return true end
-	local rp = RaycastParams.new()
-	rp.FilterDescendantsInstances = { self.npc }
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	local hit = workspace:Raycast(self.root.Position, Vector3.new(0, -3, 0), rp)
+-- ════════════════════════════════════════════════════
+--  ENVIRONMENT SENSING
+-- ════════════════════════════════════════════════════
+function AI:_rp()
+	local p = RaycastParams.new()
+	p.FilterDescendantsInstances = { self.npc }
+	p.FilterType = Enum.RaycastFilterType.Exclude
+	return p
+end
+
+function AI:_swimming()
+	-- Check humanoid state first (most reliable)
+	if self.hum:GetState() == Enum.HumanoidStateType.Swimming then return true end
+	if self.hum.FloorMaterial == Enum.Material.Water then return true end
+	local hit = workspace:Raycast(self.root.Position, Vector3.new(0,-2.5,0), self:_rp())
 	return hit ~= nil and hit.Material == Enum.Material.Water
 end
 
-function NPCAIService:_lowCeiling()
-	if not self.settings.CanCrouch then return false end
-	local rp = RaycastParams.new()
-	rp.FilterDescendantsInstances = { self.npc }
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	return workspace:Raycast(self.root.Position, Vector3.new(0, self.settings.CrouchTriggerGap, 0), rp) ~= nil
+function AI:_crouching()
+	if not self.S.CanCrouch then return false end
+	return workspace:Raycast(self.root.Position, Vector3.new(0, self.S.CrouchGap, 0), self:_rp()) ~= nil
 end
 
-function NPCAIService:_steepSlope()
-	if not self.settings.CanClimb then return false end
-	local rp = RaycastParams.new()
-	rp.FilterDescendantsInstances = { self.npc }
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	local hit = workspace:Raycast(self.root.Position, Vector3.new(0, -3, 0), rp)
-	if hit then
-		local ang = math.deg(math.acos(math.clamp(hit.Normal:Dot(Vector3.new(0,1,0)), -1, 1)))
-		return ang >= self.settings.ClimbAngleMin
-	end
-	return false
+-- ════════════════════════════════════════════════════
+--  STATE
+-- ════════════════════════════════════════════════════
+function AI:_set(s)
+	if self.state == s then return end
+	self.state = s
+	local S = self.S
+	self.hum.HipHeight  = (s == "crouch") and 0.5 or 2
+	local spd = { idle=S.WalkSpeed, walk=S.WalkSpeed, run=S.RunSpeed,
+		swim=S.SwimSpeed, crouch=S.CrouchSpeed }
+	self.hum.WalkSpeed = spd[s] or S.WalkSpeed
 end
 
--- ══════════════════════════════════════════════════════════════════════
---  STATE APPLICATION
--- ══════════════════════════════════════════════════════════════════════
-local HipHeights = { crouch = 0.5, default = 2 }
-function NPCAIService:_setState(new)
-	if self.state == new then return end
-	self.state = new
-	local hum = self.humanoid
-	local S   = self.settings
-
-	-- Reset hip height
-	hum.HipHeight = (new == "crouch") and HipHeights.crouch or HipHeights.default
-
-	local speeds = {
-		idle   = S.WalkSpeed,
-		walk   = S.WalkSpeed,
-		run    = S.RunSpeed,
-		crouch = S.CrouchSpeed,
-		swim   = S.SwimSpeed,
-		climb  = S.ClimbSpeed,
-	}
-	hum.WalkSpeed = speeds[new] or S.WalkSpeed
-end
-
--- ══════════════════════════════════════════════════════════════════════
---  STUCK RECOVERY
--- ══════════════════════════════════════════════════════════════════════
-function NPCAIService:_checkStuck(dt)
+-- ════════════════════════════════════════════════════
+--  STUCK CHECK
+-- ════════════════════════════════════════════════════
+function AI:_stuck(dt)
 	local moved = (self.root.Position - self._lastPos).Magnitude
 	self._lastPos = self.root.Position
-	local S = self.settings
+	local S = self.S
 
-	if moved < 0.3 and #self._waypoints > 0 then
-		self._stuckSecs += dt
-		if self._stuckSecs >= S.StuckTimeout then
-			self._stuckSecs  = 0
-			self._stuckJumps += 1
-			if S.CanJump then self.humanoid.Jump = true end
-			if self._stuckJumps >= S.StuckJumpMax then
-				self._stuckJumps = 0
-				self._waypoints  = {}
+	if moved < 0.25 and #self._wps > 0 then
+		self._stuckT += dt
+		if self._stuckT >= S.StuckTime then
+			self._stuckT  = 0
+			self._stuckJ += 1
+			if S.CanJump then self.hum.Jump = true end
+			if self._stuckJ >= S.StuckJumpMax then
+				self._stuckJ = 0
+				self._wps    = {}
 				self:_clearBalls()
 			end
 		end
 	else
-		self._stuckSecs  = 0
-		self._stuckJumps = 0
+		self._stuckT = 0
+		self._stuckJ = 0
 	end
 end
 
--- ══════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════
 --  PATHFINDING
--- ══════════════════════════════════════════════════════════════════════
-function NPCAIService:_getGoal()
+-- ════════════════════════════════════════════════════
+function AI:_goal()
 	if not self.target then return nil end
 	local ch = self.target.Character
 	if not ch then return nil end
@@ -264,171 +235,175 @@ function NPCAIService:_getGoal()
 	return r and r.Position or nil
 end
 
-function NPCAIService:_computePath(goal)
-	local S = self.settings
+function AI:_path(goal)
+	local S = self.S
 	local p = PathfindingService:CreatePath({
-		AgentHeight    = S.AgentHeight,
-		AgentRadius    = S.AgentRadius,
-		AgentCanJump   = S.CanJump,
-		AgentCanClimb  = S.CanClimb,
-		WaypointSpacing = 2,
+		AgentHeight      = S.AgentHeight,
+		AgentRadius      = S.AgentRadius,
+		AgentCanJump     = S.CanJump,
+		AgentCanClimb    = true,   -- always on so truss nodes generate
+		WaypointSpacing  = 1.5,   -- tighter spacing = smoother truss approach
 	})
 	local ok = pcall(function() p:ComputeAsync(self.root.Position, goal) end)
 	if ok and p.Status == Enum.PathStatus.Success then return p end
 	return nil
 end
 
-function NPCAIService:_followWaypoints()
-	local wps = self._waypoints
-	if self._wpIndex > #wps then return end
-	local wp   = wps[self._wpIndex]
+function AI:_follow()
+	local wps = self._wps
+	if self._wpi > #wps then return end
+
+	local wp   = wps[self._wpi]
 	local dist = (self.root.Position - wp.Position).Magnitude
 
-	if dist <= self.settings.WaypointRadius then
-		-- Fade out the ball we just reached
-		if self._balls[self._wpIndex - 1] then
-			self:_fadeBall(self._balls[self._wpIndex - 1])
-			self._balls[self._wpIndex - 1] = nil
+	if dist <= self.S.WpReach then
+		if self._balls[self._wpi - 1] then
+			self:_fadeBall(self._balls[self._wpi - 1])
+			self._balls[self._wpi - 1] = nil
 		end
-		self._wpIndex += 1
-		if self._wpIndex > #wps then self._waypoints = {} return end
-		wp = wps[self._wpIndex]
+		self._wpi += 1
+		if self._wpi > #wps then self._wps = {} return end
+		wp = wps[self._wpi]
 	end
 
-	if wp.Action == Enum.PathWaypointAction.Jump and self.settings.CanJump then
-		self.humanoid.Jump = true
+	-- Jump waypoints AND climb waypoints both use hum.Jump
+	-- For Climb waypoints the engine also expects the NPC to
+	-- be facing/touching the climbable — MoveTo handles that.
+	local action = wp.Action
+	if action == Enum.PathWaypointAction.Jump then
+		self.hum.Jump = true
 	end
 
-	self.humanoid:MoveTo(wp.Position)
+	self.hum:MoveTo(wp.Position)
 end
 
--- ══════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════
 --  MAIN LOOP
--- ══════════════════════════════════════════════════════════════════════
-function NPCAIService:_loop()
-	local c = RunService.Heartbeat:Connect(function(dt)
+-- ════════════════════════════════════════════════════
+function AI:_run()
+	local conn = RunService.Heartbeat:Connect(function(dt)
 		if not self.active then return end
-		if not self.npc.Parent or self.humanoid.Health <= 0 then
-			self:destroy()
-			return
+		if not self.npc.Parent or self.hum.Health <= 0 then
+			self:destroy(); return
 		end
 
-		self._timer     += dt
-		self._swimTimer += dt
+		self._t      += dt
+		self._swimT  += dt
 
-		local S       = self.settings
-		local water   = S.CanSwim   and self:_inWater()
-		local ceiling = S.CanCrouch and not water and self:_lowCeiling()
-		local slope   = S.CanClimb  and not water and not ceiling and self:_steepSlope()
+		local S    = self.S
+		local swim = S.CanSwim and self:_swimming()
+		local duck = not swim  and self:_crouching()
 
-		self:_checkStuck(dt)
-
-		-- Swim strokes
-		if water and self._swimTimer >= S.SwimStrokeRate then
-			self._swimTimer = 0
-			if S.CanJump then self.humanoid.Jump = true end
+		-- Swim strokes (periodic jump so NPC doesn't sink)
+		if swim and self._swimT >= S.SwimStrokeRate then
+			self._swimT = 0
+			self.hum.Jump = true
 		end
 
-		-- Recalc path on interval
-		if self._timer >= S.RecalcRate then
-			self._timer = 0
-			local goal = self:_getGoal()
+		self:_stuck(dt)
+
+		-- Path recalc
+		if self._t >= S.RecalcRate then
+			self._t = 0
+			local goal = self:_goal()
 
 			if not goal then
-				self:_setState("idle")
-				self._waypoints = {}
+				self:_set("idle")
+				self._wps = {}
 				self:_clearBalls()
-			else
-				local dist = (self.root.Position - goal).Magnitude
+				return
+			end
 
-				if dist > S.LoseTargetRange or dist < S.StopDistance then
-					-- Idle / too close
-					self:_setState("idle")
-					self.humanoid:MoveTo(self.root.Position)
-					self._waypoints = {}
-					self:_clearBalls()
-				elseif dist <= S.FollowRange then
-					-- Determine movement state
-					local newState = "walk"
-					if water   then newState = "swim"
-					elseif ceiling then newState = "crouch"
-					elseif slope    then newState = "climb"
-					elseif dist >= S.RunThreshold then newState = "run"
-					end
-					self:_setState(newState)
+			local d = (self.root.Position - goal).Magnitude
 
-					local path = self:_computePath(goal)
-					if path then
-						self._waypoints = path:GetWaypoints()
-						self._wpIndex   = 2
-						self:_buildBalls(self._waypoints)
-					else
-						-- Direct fallback
-						self.humanoid:MoveTo(goal)
-						self:_clearBalls()
-					end
+			if d > S.LoseRange then
+				self:_set("idle")
+				self._wps = {}
+				self:_clearBalls()
+				self.hum:MoveTo(self.root.Position)
+
+			elseif d <= S.StopDistance then
+				self:_set("idle")
+				self._wps = {}
+				self:_clearBalls()
+				self.hum:MoveTo(self.root.Position)
+
+			elseif d <= S.FollowRange then
+				-- Pick state
+				if swim then        self:_set("swim")
+				elseif duck then    self:_set("crouch")
+				elseif d >= S.RunThreshold then self:_set("run")
+				else                self:_set("walk")
+				end
+
+				local p = self:_path(goal)
+				if p then
+					self._wps = p:GetWaypoints()
+					self._wpi = 2
+					self:_makeBalls(self._wps)
 				else
-					self:_setState("idle")
-					self._waypoints = {}
+					-- Direct fallback (no path found, e.g. open water)
+					self.hum:MoveTo(goal)
 					self:_clearBalls()
 				end
+			else
+				self:_set("idle")
+				self._wps = {}
+				self:_clearBalls()
 			end
 		end
 
-		self:_followWaypoints()
+		self:_follow()
 	end)
 
-	table.insert(self._conns, c)
+	table.insert(self._conns, conn)
 end
 
--- ══════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════
 --  PUBLIC API
--- ══════════════════════════════════════════════════════════════════════
+-- ════════════════════════════════════════════════════
 
---- Change the follow target at runtime
-function NPCAIService:setTarget(player)
+--- Change follow target at any time
+function AI:setTarget(player)
 	self.target = player
 end
 
---- Update settings at runtime
---- Example: ai:configure({ WalkSpeed = 20, ShowPath = false, FollowRange = 50 })
-function NPCAIService:configure(tbl)
-	for k, v in pairs(tbl) do self.settings[k] = v end
-	self.humanoid.WalkSpeed = self.settings.WalkSpeed
-	self.humanoid.JumpPower = self.settings.JumpPower
+--- Tweak settings at runtime, e.g. ai:configure({ WalkSpeed = 20 })
+function AI:configure(t)
+	for k, v in pairs(t) do self.S[k] = v end
+	self.hum.WalkSpeed = self.S.WalkSpeed
+	self.hum.JumpPower = self.S.JumpPower
 end
 
---- Pause all AI logic
-function NPCAIService:pause()
+--- Pause movement
+function AI:pause()
 	self.active = false
-	self.humanoid:MoveTo(self.root.Position)
+	self.hum:MoveTo(self.root.Position)
 	self:_clearBalls()
 end
 
---- Resume AI logic
-function NPCAIService:resume()
+--- Resume movement
+function AI:resume()
 	self.active = true
 end
 
---- Get current AI state ("idle" | "walk" | "run" | "swim" | "climb" | "crouch")
-function NPCAIService:getState()
+--- Returns "idle" | "walk" | "run" | "swim" | "crouch"
+function AI:getState()
 	return self.state
 end
 
---- Destroy and clean up everything
-function NPCAIService:destroy()
+--- Full cleanup
+function AI:destroy()
 	self.active = false
 	for _, c in ipairs(self._conns) do c:Disconnect() end
 	self._conns = {}
 	self:_clearBalls()
-	if self._pathFolder and self._pathFolder.Parent then
-		self._pathFolder:Destroy()
-	end
+	if self._folder and self._folder.Parent then self._folder:Destroy() end
 end
 
--- Callable shorthand: require(NPCAIService)(npc, player, settings)
-return setmetatable(NPCAIService, {
-	__call = function(_, ...)
-		return NPCAIService.new(...)
-	end,
+-- ════════════════════════════════════════════════════
+--  SHORTHAND CALL
+-- ════════════════════════════════════════════════════
+return setmetatable(AI, {
+	__call = function(_, ...) return AI.new(...) end,
 })
