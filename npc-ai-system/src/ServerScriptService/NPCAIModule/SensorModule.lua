@@ -98,19 +98,14 @@ function SensorModule:_scanEnvironment()
 	local npc    = self._npc
 	local pos    = npc.HRP.Position
 
-	-- Water check: raycast slightly below feet
-	local downResult = Workspace:Raycast(pos, Vector3.new(0, -2, 0), self._rayParams)
-	if downResult and downResult.Material == Enum.Material.Water then
-		self.InWater = true
-	else
-		-- Also check if HRP is submerged
-		local region = Region3.new(pos - Vector3.new(1,1,1), pos + Vector3.new(1,1,1))
-		self.InWater = Workspace.Terrain:ReadVoxels(
-			region, 4
-		) ~= nil and downResult and downResult.Material == Enum.Material.Water
-		-- Simple fallback
-		self.InWater = downResult and downResult.Material == Enum.Material.Water or false
-	end
+	-- Water check: two raycasts — one down from HRP, one up from below feet
+	-- This catches both "standing in shallow water" and "fully submerged"
+	local feetPos    = pos - Vector3.new(0, 3, 0)
+	local downResult = Workspace:Raycast(pos,     Vector3.new(0, -6, 0), self._rayParams)
+	local upResult   = Workspace:Raycast(feetPos, Vector3.new(0,  6, 0), self._rayParams)
+
+	self.InWater = (downResult and downResult.Material == Enum.Material.Water)
+		or (upResult and upResult.Material == Enum.Material.Water)
 
 	-- Low ceiling check: short upward ray → crawl needed
 	local upResult = Workspace:Raycast(pos, Vector3.new(0, 2.5, 0), self._rayParams)
