@@ -1,97 +1,121 @@
---[[
-	ServerScript.lua (place in ServerScriptService)
-	Example of how to spawn and configure NPCs using NPCService
---]]
+-- NPCController.lua
+-- Place as a ServerScript in ServerScriptService
+-- Requires NPCAIService ModuleScript to be in ServerScriptService (or adjust path)
 
+local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
-local NPCService = require(ServerScriptService.NPCAIModule.NPCService)
 
--- ─────────────────────────────────────────────
---  EXAMPLE 1: Aggressive NPC
--- ─────────────────────────────────────────────
-local aggressiveNPC = NPCService.new(
-	workspace.AggressiveNPC,  -- your NPC model in Workspace
-	{
-		defaultState  = "aggressive",
-		aggroRange    = 40,
-		attackRange   = 5,
-		attackDamage  = 15,
-		runSpeed      = 20,
-		debugMode     = true,
-	}
-)
-aggressiveNPC:Start()
+-- Adjust this path to wherever you put the ModuleScript
+local NPCAIService = require(ServerScriptService:WaitForChild("NPCAIService"))
 
+-- ─── CONFIG ───────────────────────────────────────────────────────────────────
+local NPC_TEMPLATE_NAME = "NPC"   -- Name of your NPC model in Workspace or ServerStorage
+local SPAWN_POSITION    = Vector3.new(0, 5, 0)
 
--- ─────────────────────────────────────────────
---  EXAMPLE 2: Scared NPC (flees on sight)
--- ─────────────────────────────────────────────
-local scaredNPC = NPCService.new(
-	workspace.ScaredNPC,
-	{
-		defaultState  = "scared",
-		fleeRange     = 30,
-		runSpeed      = 22,
-		dynamicBehavior = false,  -- always scared, never fights
-	}
-)
-scaredNPC:Start()
+-- ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-
--- ─────────────────────────────────────────────
---  EXAMPLE 3: Patrol NPC → becomes aggressive
--- ─────────────────────────────────────────────
-local patrolNPC = NPCService.new(
-	workspace.PatrolNPC,
-	{
-		defaultState    = "patrol",
-		aggroRange      = 25,
-		attackRange     = 5,
-		attackDamage    = 10,
-		dynamicBehavior = true,   -- patrols until player spotted
-		patrolLoop      = true,
-		patrolWaypoints = {
-			Vector3.new(10, 0, 10),
-			Vector3.new(50, 0, 10),
-			Vector3.new(50, 0, 50),
-			Vector3.new(10, 0, 50),
-		},
-	}
-)
-patrolNPC:Start()
-
-
--- ─────────────────────────────────────────────
---  EXAMPLE 4: Passive wanderer with kill-part avoidance
--- ─────────────────────────────────────────────
-local passiveNPC = NPCService.new(
-	workspace.PassiveNPC,
-	{
-		defaultState   = "passive",
-		wanderRadius   = 30,
-		wanderInterval = { 3, 7 },
-		-- Higher cost materials → NPC prefers to walk around them
-		materialCosts  = {
-			[Enum.Material.Water]     = 10,
-			[Enum.Material.Sandstone] = 8,   -- use valid materials only
-			[Enum.Material.Sand]      = 5,
-		},
-	}
-)
-passiveNPC:Start()
-
-
--- ─────────────────────────────────────────────
---  SPAWNING MANY NPCS FROM A FOLDER
--- ─────────────────────────────────────────────
-for _, model in ipairs(workspace.NPCFolder:GetChildren()) do
-	if model:IsA("Model") and model.PrimaryPart then
-		local npc = NPCService.new(model, {
-			defaultState    = model:GetAttribute("BehaviorType") or "passive",
-			aggroRange      = model:GetAttribute("AggroRange") or 30,
-			attackDamage    = model:GetAttribute("Damage") or 10,
-			dynamicBehavior = true,
-		})
-		npc:Start()
+local function getClosestPlayer(fromPosition)
+	local closest, closestDist = nil, math.huge
+	for _, player in ipairs(Players:GetPlayers()) do
+		local char = player.Character
+		if char then
+			local root = char:FindFirstChild("HumanoidRootPart")
+			if root then
+				local d = (root.Position - fromPosition).Magnitude
+				if d < closestDist then
+					closest, closestDist = player, d
+				end
+			end
+		end
 	end
+	return closest
 end
+
+-- ─── SPAWN NPC ────────────────────────────────────────────────────────────────
+
+local function spawnNPC()
+	-- Clone your NPC from ServerStorage or Workspace
+	local template = game:GetService("ServerStorage"):FindFirstChild(NPC_TEMPLATE_NAME)
+		or workspace:FindFirstChild(NPC_TEMPLATE_NAME)
+
+	if not template then
+		warn("NPCController: Could not find NPC template named '"..NPC_TEMPLATE_NAME.."'")
+		warn("Create a Model with a Humanoid + HumanoidRootPart in ServerStorage or Workspace.")
+		return
+	end
+
+	local npc = template:Clone()
+	npc.Name = "AI_" .. NPC_TEMPLATE_NAME
+	npc:SetPrimaryPartCFrame(CFrame.new(SPAWN_POSITION))
+	npc.Parent = workspace
+
+	-- Find who to follow (closest player, or wait for one)
+	local function startFollowing()
+		local target = getClosestPlayer(SPAWN_POSITION)
+
+		if not target then
+			-- Wait for a player to join
+			Players.PlayerAdded:Wait()
+			target = Players:GetPlayers()[1]
+		end
+
+		print(("NPCController: NPC '%s' will follow player '%s'"):format(npc.Name, target.Name))
+
+		local ai = NPCAIService(npc, target)
+
+		-- If NPC dies, clean up
+		local hum = npc:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.Died:Connect(function()
+				ai:destroy()
+				task.delay(5, function()
+					npc:Destroy()
+				end)
+			end)
+		end
+
+		-- If target leaves, switch to next available player
+		Players.PlayerRemoving:Connect(function(leavingPlayer)
+			if ai.target == leavingPlayer then
+				task.delay(1, function()
+					local newTarget = getClosestPlayer(npc.PrimaryPart.Position)
+					if newTarget then
+						print("NPCController: Switching follow target to " .. newTarget.Name)
+						ai:setTarget(newTarget)
+					else
+						ai:pause()
+						-- Resume when someone joins
+						Players.PlayerAdded:Connect(function(p)
+							ai:setTarget(p)
+							ai:resume()
+						end)
+					end
+				end)
+			end
+		end)
+
+		return ai
+	end
+
+	task.spawn(startFollowing)
+end
+
+-- ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+
+-- Spawn immediately if a player is already in, or wait
+if #Players:GetPlayers() > 0 then
+	spawnNPC()
+else
+	Players.PlayerAdded:Once(function()
+		task.delay(1, spawnNPC) -- slight delay so character loads
+	end)
+end
+
+-- Optional: spawn one NPC per player who joins
+--[[
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function()
+		task.delay(1, spawnNPC)
+	end)
+end)
+]]
