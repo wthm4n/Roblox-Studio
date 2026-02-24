@@ -159,7 +159,9 @@ function NPCService:Stop()
 		conn:Disconnect()
 	end
 	self._connections = {}
-	self.Movement:Stop()
+	if self.Movement then
+		self.Movement:Destroy()
+	end
 end
 
 function NPCService:Destroy()
@@ -218,9 +220,9 @@ function NPCService:_tickAggressive(dt)
 		self.Movement:Stop()
 		self:_tryAttack(target, dt)
 	else
-		-- Chase
+		-- Chase — uses recomputing path tracker
 		self.Humanoid.WalkSpeed = self.Config.runSpeed
-		self.Movement:MoveTo(targetHRP.Position)
+		self.Movement:Chase(targetHRP.Position)
 	end
 end
 
@@ -246,7 +248,7 @@ function NPCService:_tickScared(dt)
 	self.Humanoid.WalkSpeed = self.Config.runSpeed
 	local fleeDir = (self.HRP.Position - targetHRP.Position).Unit
 	local fleeGoal = self.HRP.Position + fleeDir * 30
-	self.Movement:MoveTo(fleeGoal)
+	self.Movement:Chase(fleeGoal)
 end
 
 function NPCService:_tickPassive(dt)
