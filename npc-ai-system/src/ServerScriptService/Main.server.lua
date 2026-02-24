@@ -72,8 +72,9 @@ local passiveNPC = NPCService.new(
 		wanderInterval = { 3, 7 },
 		-- Higher cost materials → NPC prefers to walk around them
 		materialCosts  = {
-			[Enum.Material.Water] = 10,
-			[Enum.Material.Lava]  = 100,
+			[Enum.Material.Water]     = 10,
+			[Enum.Material.Sandstone] = 8,   -- use valid materials only
+			[Enum.Material.Sand]      = 5,
 		},
 	}
 )
