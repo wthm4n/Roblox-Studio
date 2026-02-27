@@ -10,7 +10,7 @@
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
-local Config          = require(script.Parent.Parent.Parent.Shared.Config)
+local Config          = require(game.ReplicatedStorage.Shared.Config)
 
 local Aggressive = setmetatable({}, { __index = PersonalityBase })
 Aggressive.__index = Aggressive
