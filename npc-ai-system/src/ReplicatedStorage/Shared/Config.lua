@@ -93,4 +93,33 @@ Config.Tactical = {
 	SuppressTime      = 3,
 }
 
+-- ─── Squad Coordination ────────────────────────────────────────────────────
+--[[
+	Squad system layers on top of any personality.
+	Enable per-NPC by setting the "EnableSquad" attribute to true on the
+	spawn point (or the NPC model itself).
+
+	Key concepts:
+	  SquadJoinRadius   — NPCs within this range at spawn join the same squad
+	  MaxSquadSize      — cap members per squad (prevents mega-blobs)
+	  AlertDuration     — how long hunt-mode lasts after losing sight
+	  AlertThreatBoost  — synthetic threat added to alerted members' tables
+	  AlertCooldown     — min seconds between re-alerts from the same NPC
+	  BackupRadius      — range within which idle squads respond to a call
+	  BackupThreshold   — only call backup if squad has fewer than N members
+	  MaxBackupSquads   — max number of extra squads to pull in per alert
+	  FormationSnapDist — re-path to slot only when this far from it (studs)
+--]]
+Config.Squad = {
+	SquadJoinRadius   = 40,
+	MaxSquadSize      = 6,
+	AlertDuration     = 20,
+	AlertThreatBoost  = 50,
+	AlertCooldown     = 3,
+	BackupRadius      = 80,
+	BackupThreshold   = 3,
+	MaxBackupSquads   = 2,
+	FormationSnapDist = 3,
+}
+
 return Config
