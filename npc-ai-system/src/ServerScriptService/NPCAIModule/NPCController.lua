@@ -6,7 +6,7 @@
 
 local RunService = game:GetService("RunService")
 
-local StateMachine          = require(script.Parent.Parent.Shared.StateMachine)
+local StateMachine          = require(game.)
 local Config                = require(script.Parent.Parent.Shared.Config)
 local PathfindingController = require(script.Parent.PathfindingController)
 local TargetSystem          = require(script.Parent.TargetSystem)
