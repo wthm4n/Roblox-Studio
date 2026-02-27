@@ -4,22 +4,18 @@
 	A personality MIXIN — not a standalone personality.
 	Wraps any existing personality and layers squad coordination on top.
 
-	Usage in PersonalityManager.create():
-	  local base = PersonalityClass.new(entity)
-	  return SquadBehavior.wrap(entity, base)
-
-	What it adds:
-	  • OnTargetFound → alerts the squad via SquadManager
-	  • OnSquadAlert  → receives broadcasts, forces target tracking
-	  • OnUpdate      → applies formation offsets when chasing
-	                    leader sets waypoints, followers path to leader's pos + offset
-	  • IsLeader()    → helpers for other personalities to query their role
-	  
-	Design principle:
-	  SquadBehavior delegates ALL base personality calls through to the
-	  wrapped personality. It only intercepts/augments specific hooks.
-	  This means Tactical + Squad, Aggressive + Squad, etc. all work
-	  without modifying the underlying personality files.
+	FIXES (v2):
+	  - OnSquadAlert no longer calls FSM:Transition("Chase") directly.
+	    Previously: Chase.OnUpdate ran immediately after, found CurrentTarget=nil
+	    (threat table was just written, TargetSys:Update() hadn't run yet),
+	    and kicked back to Idle every single time.
+	    Now: we seed TargetSys.LastKnownPos with the broadcaster's position
+	    so Chase has a valid destination, then transition. Chase will hold
+	    because LastKnownPos is set even when CurrentTarget is nil.
+	  - _huntMode now properly gates CanEnterCombat so Chase doesn't
+	    immediately bail via the personality check.
+	  - Formation: followers now path to target position + offset directly
+	    (not leader position), so they spread around the player correctly.
 --]]
 
 local SquadManager = require(game.ServerScriptService.NPCAIModule.SquadManager)
@@ -32,31 +28,24 @@ SquadBehavior.__index = SquadBehavior
 
 -- ─── Wrap ──────────────────────────────────────────────────────────────────
 
---[[
-	Wraps a base personality instance and returns a new object that:
-	  1. Passes all base personality method calls through unchanged
-	  2. Overrides/extends OnTargetFound, OnUpdate, and adds OnSquadAlert
---]]
 function SquadBehavior.wrap(entity: any, base: any): any
 	local self = setmetatable({}, SquadBehavior)
 
-	self.Entity      = entity
-	self._base       = base
-	self.Name        = (base.Name or "None") .. "+Squad"
+	self.Entity          = entity
+	self._base           = base
+	self.Name            = (base.Name or "None") .. "+Squad"
 
-	-- Squad state
-	self._alertCooldown = 0   -- prevent spam-alerting
-	self._huntMode      = false
-	self._huntTimer     = 0
+	self._alertCooldown  = 0
+	self._huntMode       = false
+	self._huntTimer      = 0
 	self._formationTimer = 0
 
-	-- Register with the squad system
 	SquadManager.register(entity)
 
 	return self
 end
 
--- ─── Squad Queries (usable by States or other personalities) ───────────────
+-- ─── Squad queries ─────────────────────────────────────────────────────────
 
 function SquadBehavior:IsLeader(): boolean
 	return SquadManager.getLeader(self.Entity) == self.Entity
@@ -66,10 +55,11 @@ function SquadBehavior:GetSquadSize(): number
 	return SquadManager.getMemberCount(self.Entity)
 end
 
--- ─── Base personality pass-throughs ────────────────────────────────────────
+-- ─── Base pass-throughs ────────────────────────────────────────────────────
 
 function SquadBehavior:CanEnterCombat(): boolean
-	if self._huntMode then return true end  -- squad alert overrides base
+	-- Hunt mode overrides the base personality so Chase doesn't immediately bail
+	if self._huntMode then return true end
 	return self._base:CanEnterCombat()
 end
 
@@ -91,8 +81,6 @@ end
 
 function SquadBehavior:OnDamaged(amount: number, attacker: any?)
 	self._base:OnDamaged(amount, attacker)
-
-	-- Being shot at alerts the whole squad
 	if attacker and self._alertCooldown <= 0 then
 		self._alertCooldown = CFG.AlertCooldown
 		SquadManager.alert(self.Entity, attacker)
@@ -103,8 +91,6 @@ end
 
 function SquadBehavior:OnTargetFound(player: any)
 	self._base:OnTargetFound(player)
-
-	-- Alert squad when we personally spot someone
 	if self._alertCooldown <= 0 then
 		self._alertCooldown = CFG.AlertCooldown
 		SquadManager.alert(self.Entity, player)
@@ -112,64 +98,90 @@ function SquadBehavior:OnTargetFound(player: any)
 end
 
 --[[
-	Called by SquadManager when an ally alerts us about a target.
-	broadcaster = the brain that spotted the player first.
+	Called by SquadManager when an ally alerts us.
+
+	THE FIX: instead of blindly calling FSM:Transition("Chase") and hoping
+	TargetSys already has CurrentTarget set (it doesn't — Update() hasn't
+	run yet this frame), we:
+	  1. Enter hunt mode so CanEnterCombat() returns true
+	  2. Seed TargetSys.LastKnownPos with the broadcaster's position
+	     Chase.OnUpdate checks LastKnownPos as a fallback when CurrentTarget=nil,
+	     so the NPC will walk toward the fight instead of snapping back to Idle
+	  3. Transition to Chase — now it will hold because LastKnownPos is valid
+	  4. Also start pathing immediately so there's no 0.2s PathRecalcDelay lag
 --]]
 function SquadBehavior:OnSquadAlert(target: any, broadcaster: any)
 	local entity = self.Entity
 
-	-- Enter hunt mode: override CanEnterCombat for CFG.AlertDuration
+	-- Step 1: enter hunt mode FIRST so CanEnterCombat() = true
 	self._huntMode  = true
 	self._huntTimer = CFG.AlertDuration
 
-	-- If we can actually track the target, do so immediately
-	if entity.TargetSys then
+	-- Step 2: register threat and unignore (so TargetSys can pick them up next tick)
+	if entity.TargetSys and target then
 		entity.TargetSys:UnignorePlayer(target)
 		entity.TargetSys:RegisterThreat(target, CFG.AlertThreatBoost)
 	end
 
-	-- Force chase state if we're just patrolling
+	-- Step 3: seed LastKnownPos so Chase has a valid destination right now
+	-- Priority: target's actual position > broadcaster's position
+	local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+	local knownPos   = nil
+
+	if targetRoot then
+		knownPos = targetRoot.Position
+	elseif broadcaster and broadcaster.RootPart then
+		-- We don't have LoS to target — at least walk toward the ally who does
+		knownPos = broadcaster.RootPart.Position
+	end
+
+	if knownPos then
+		entity.TargetSys.LastKnownPos  = knownPos
+		entity.TargetSys.TimeSinceSeen = 0
+	end
+
+	-- Step 4: transition to Chase and kick off pathfinding immediately
 	local state = entity.FSM:GetState()
 	if state == "Idle" or state == "Patrol" then
-		-- Use LastKnownPos from broadcaster so we navigate toward the fight
-		local bRoot = broadcaster.RootPart
-		if bRoot and entity.Pathfinder then
-			-- Path toward the broadcaster first (who has line of sight)
-			entity.Pathfinder:MoveTo(bRoot.Position)
-		end
 		entity.FSM:Transition("Chase")
+
+		-- Start moving right now — don't wait for Chase.OnUpdate's recalc timer
+		if knownPos and entity.Pathfinder then
+			entity.Pathfinder:MoveTo(knownPos)
+		end
 	end
 
 	print(("[SquadBehavior] %s received ALERT from %s — hunting %s"):format(
 		entity.NPC.Name,
-		broadcaster.NPC.Name,
+		broadcaster and broadcaster.NPC.Name or "?",
 		tostring(target)))
 end
 
+-- ─── Update ────────────────────────────────────────────────────────────────
+
 function SquadBehavior:OnUpdate(dt: number)
-	-- Decay timers
 	self._alertCooldown  -= dt
 	self._formationTimer += dt
 
-	-- Hunt mode expiry
+	-- Hunt mode: keep CanEnterCombat() = true until timer expires
 	if self._huntMode then
 		self._huntTimer -= dt
 		if self._huntTimer <= 0 then
 			self._huntMode = false
-			-- If no personal target either, go idle
-			if not self.Entity.TargetSys.CurrentTarget then
+			-- Only go idle if we truly lost the target
+			if not self.Entity.TargetSys.CurrentTarget
+				and not self.Entity.TargetSys.LastKnownPos then
 				self.Entity.FSM:Transition("Idle")
 			end
 		end
 	end
 
-	-- ── Formation logic (every 0.3s) ────────────────────────────────────
+	-- Formation (every 0.3s, only during Chase)
 	if self._formationTimer >= 0.3 then
 		self._formationTimer = 0
 		self:_applyFormation()
 	end
 
-	-- Delegate to base personality
 	self._base:OnUpdate(dt)
 end
 
@@ -177,40 +189,23 @@ end
 
 function SquadBehavior:_applyFormation()
 	local entity = self.Entity
-	local state  = entity.FSM:GetState()
+	if entity.FSM:GetState() ~= "Chase" then return end
+	if self:IsLeader() then return end  -- leader chases directly, no offset
 
-	-- Only apply formation during Chase
-	if state ~= "Chase" then return end
+	local offset = SquadManager.getFormationOffset(entity)
 
-	local isLeader = self:IsLeader()
-	local offset   = SquadManager.getFormationOffset(entity)
-
-	if isLeader then
-		-- Leader chases the target directly — no offset needed
-		-- The leader's pathfinder is already managed by States.Chase
-		return
-	end
-
-	-- Follower: path to (leader position + formation offset)
-	-- If no leader is alive, fall back to normal chase
-	local leader = SquadManager.getLeader(entity)
-	if not leader or not leader.NPC.Parent then return end
-
-	local target = entity.TargetSys.CurrentTarget
+	-- Get target position — prefer live target, fall back to shared/last known
+	local target     = entity.TargetSys.CurrentTarget
 		or SquadManager.getSharedTarget(entity)
+	local targetRoot = target and target.Character
+		and target.Character:FindFirstChild("HumanoidRootPart")
+	local targetPos  = targetRoot and targetRoot.Position
+		or entity.TargetSys.LastKnownPos
 
-	if not target then return end
+	if not targetPos then return end
 
-	-- Destination: formation slot relative to current target position
-	-- This means the group surrounds the player, not clusters on the leader
-	local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-	if not targetRoot then return end
-
-	local dest = targetRoot.Position + offset
-
-	-- Only re-path if we've drifted from our slot
-	local myPos   = entity.RootPart.Position
-	local slotDist = (myPos - dest).Magnitude
+	local dest     = targetPos + offset
+	local slotDist = (entity.RootPart.Position - dest).Magnitude
 
 	if slotDist > CFG.FormationSnapDist then
 		entity.Pathfinder:MoveTo(dest)
