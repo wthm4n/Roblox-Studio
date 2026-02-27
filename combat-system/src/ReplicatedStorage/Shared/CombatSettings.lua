@@ -144,8 +144,8 @@ CombatSettings.Ragdoll = {
 	-- Horizontal launch force (studs/s) — how far back they get sent.
 	-- ~5-10 studs of travel. Keep this modest so it doesn't feel floaty.
 	LaunchForce = {
-		[4] = 36,    -- M4 combo ender
-		[5] = 48,    -- M5 finisher
+		[4] = 70,    -- M4 combo ender
+		[5] = 95,    -- M5 finisher
 	},
 	-- Vertical launch force (studs/s) — the upward "pop" before they crash down.
 	-- Small enough that they go up maybe 2-3 studs then fall, not into orbit.
