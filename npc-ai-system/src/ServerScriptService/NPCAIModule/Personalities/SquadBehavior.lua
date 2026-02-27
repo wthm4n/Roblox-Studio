@@ -219,4 +219,4 @@ function SquadBehavior:Destroy()
 	self._base:Destroy()
 end
 
-return SquadBehavior
+return SquadBehaviors
