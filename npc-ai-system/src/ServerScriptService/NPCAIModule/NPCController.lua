@@ -8,7 +8,7 @@ local RunService = game:GetService("RunService")
 
 local StateMachine          = require(game.ReplicatedStorage.Shared.StateMachine) -- ReplicatedStorage.Shared folder
 local Config                = require(game.ReplicatedStorage.Shared.Config)
-local PathfindingController = require(script.Parent.PathfindingController)
+local PathfindingController = require(game.)
 local TargetSystem          = require(script.Parent.TargetSystem)
 local AnimationController   = require(script.Parent.AnimationController)
 local States                = require(script.Parent.States)
