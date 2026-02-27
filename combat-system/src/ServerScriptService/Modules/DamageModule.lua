@@ -15,8 +15,9 @@ local RunService = game:GetService("RunService")
 
 -- ── Lazy deps (set via DamageModule.init) ────────────────────────────────────
 local _remotes:        { [string]: RemoteEvent } = {}
-local _ragdollModule   = nil   -- injected via DamageModule.init
-local _ragdollForces:  { [number]: number } = {}
+local _stunModule      = nil
+local _ragdollModule   = nil
+local _ragdollConfig   = nil   -- full CombatSettings.Ragdoll table
 local _stunDurations:  { [number]: number } = {}
 
 -- ── Constructor ───────────────────────────────────────────────────────────────
@@ -29,16 +30,18 @@ end
 
 -- ── Module-level init (call once from CombatService) ─────────────────────────
 --[[
-	DamageModule.init(remoteTable, ragdollModule, ragdollForces, stunDurations)
+	DamageModule.init(remoteTable, stunModule, ragdollModule, ragdollConfig, stunDurations)
 	  remoteTable    : { ApplyHitEffect, HitConfirm }
+	  stunModule     : StunModule table
 	  ragdollModule  : RagdollModule table
-	  ragdollForces  : CombatSettings.Ragdoll.LaunchForce table
+	  ragdollConfig  : CombatSettings.Ragdoll full table
 	  stunDurations  : CombatSettings.Stun.Duration table
 ]]
-function DamageModule.init(remoteTable, ragdollModule, ragdollForces, stunDurations)
+function DamageModule.init(remoteTable, stunModule, ragdollModule, ragdollConfig, stunDurations)
 	_remotes       = remoteTable
+	_stunModule    = stunModule
 	_ragdollModule = ragdollModule
-	_ragdollForces = ragdollForces or {}
+	_ragdollConfig = ragdollConfig or {}
 	_stunDurations = stunDurations or {}
 end
 
@@ -74,19 +77,30 @@ function DamageModule:Apply(victim: Player, amount: number, comboIndex: number):
 	-- ── Damage ───────────────────────────────────────────────────────────────
 	humanoid:TakeDamage(amount)
 
-	-- ── Ragdoll + Stun — apply / refresh ────────────────────────────────────
-	-- RagdollModule.Apply calls StunModule.Apply internally — one call covers both.
-	-- Each hit refreshes both timers, keeping the victim down.
-	if _ragdollModule then
-		local duration    = _stunDurations[comboIndex] or _stunDurations[1] or 1.0
-		local launchForce = _ragdollForces[comboIndex] or _ragdollForces[1] or 28
+	-- ── Ragdoll (last hit) OR Stun (earlier hits) ──────────────────────────────
+	local isRagdollHit = _ragdollConfig and _ragdollConfig.TriggerOnHit and
+		_ragdollConfig.TriggerOnHit[comboIndex] == true
+
+	if isRagdollHit and _ragdollModule then
+		-- Last hit of combo — full ragdoll with horizontal push, no upward arc
+		local duration    = _ragdollConfig.Duration[comboIndex]    or 1.4
+		local launchForce = _ragdollConfig.LaunchForce[comboIndex] or 42
 		_ragdollModule.Apply(victim, self._attacker, duration, launchForce)
+	elseif _stunModule then
+		-- Earlier hits — movement lock only, no physics ragdoll
+		local duration = _stunDurations[comboIndex] or _stunDurations[1] or 0.7
+		_stunModule.Apply(victim, duration)
 	end
 
-	-- ── Hit-reaction animation ────────────────────────────────────────────────
-	local reactionAnim = _pickRandom(HIT_REACTIONS)
-	if _remotes.ApplyHitEffect then
-		_remotes.ApplyHitEffect:FireAllClients(victim, reactionAnim, comboIndex)
+	-- ── Hit-reaction animation → ALL clients ─────────────────────────────────
+	-- Fires regardless of ragdoll state. The client plays this directly on the
+	-- Animator (bypassing the Animate script) so it works even while ragdolled.
+	-- On the last hit we don't play a reaction — ragdoll physics IS the reaction.
+	if not isRagdollHit then
+		local reactionAnim = _pickRandom(HIT_REACTIONS)
+		if _remotes.ApplyHitEffect then
+			_remotes.ApplyHitEffect:FireAllClients(victim, reactionAnim, comboIndex)
+		end
 	end
 
 	-- ── HitConfirm: highlight + hit sound + camera shake ─────────────────────
