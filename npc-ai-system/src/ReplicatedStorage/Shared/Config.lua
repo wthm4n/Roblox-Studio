@@ -7,9 +7,9 @@ local Config = {}
 
 -- ─── Detection ─────────────────────────────────────────────────────────────
 Config.Detection = {
-	SightRange        = 9999,
+	SightRange        = 120,
 	SightAngle        = 180,
-	HearRange         = 9999,
+	HearRange         = 80,
 	LoseTargetTime    = 8,
 	RaycastCooldown   = 0.05,
 }
