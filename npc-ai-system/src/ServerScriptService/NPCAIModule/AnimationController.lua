@@ -14,7 +14,7 @@ local ANIM_IDS = {
 	fall  = "rbxassetid://180436148",
 	climb = "rbxassetid://180436334",
 	swim  = "rbxassetid://180435613",
-	Attack = "rbxassetid://129967390",
+	Attack = "rbxassetid://103696146273479",
 	Hurt   = "rbxassetid://180435397",
 	Death  = "rbxassetid://180436148",
 }
