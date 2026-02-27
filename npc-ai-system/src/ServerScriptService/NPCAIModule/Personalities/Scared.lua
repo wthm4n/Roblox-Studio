@@ -2,12 +2,19 @@
 	Scared.lua
 
 	Behavior:
-	  - Always ignores players for targeting (never chases, never attacks)
-	  - Detects players independently via its own proximity checks
-	  - If a player enters FleeRadius → ShouldForceFlee() = true
-	  - If a player enters HearRange (closer) → panic: random freeze/slow
-	  - If attacked → flee immediately regardless of distance
+	  - Completely ignores all players for TargetSys (never chases, never attacks)
+	  - Does its own proximity scanning every frame
+	  - Player enters FleeRadius → immediately flee AWAY from them
+	  - Player gets within HearRange (closer) → random freeze or slow panic effect
+	  - If attacked → flee hard for 5s regardless of distance
 	  - Flee ends only when no player is within FleeRadius AND not attacked
+	  - Never attacks back under any circumstance
+
+	Direction fix:
+	  Since TargetSys.CurrentTarget is always nil for Scared, _beginFlee
+	  would pick a random direction. Instead we override _beginFlee by
+	  directly calling Pathfinder:MoveTo with the correct away-direction
+	  ourselves, and we re-path every 3s via _fleeUpdateTimer.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -21,15 +28,17 @@ local CFG = Config.Scared
 
 function Scared.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Scared)
-	self.Name             = "Scared"
-	self._isFleeing       = false   -- true when a player is too close
-	self._isAttacked      = false   -- true when hit, overrides distance check
-	self._attackedTimer   = 0
-	self._panicTimer      = 0       -- freeze/slow effect timer
-	self._currentSpeed    = CFG.PanicSpeed
-	self._frozen          = false
+	self.Name              = "Scared"
+	self._isFleeing        = false
+	self._isAttacked       = false
+	self._attackedTimer    = 0
+	self._panicTimer       = 0
+	self._currentSpeed     = CFG.PanicSpeed
+	self._frozen           = false
+	self._nearestThreat    = nil   -- Vector3 of nearest player position
+	self._fleeUpdateTimer  = 0     -- re-path away every N seconds
 
-	-- Scared NPCs never engage combat, ignore all for TargetSys
+	-- Scared NPCs never engage TargetSys
 	entity.TargetSys:IgnoreAll()
 
 	self._playerAddedConn = Players.PlayerAdded:Connect(function(player)
@@ -42,7 +51,7 @@ end
 -- ── Questions States.lua asks ──────────────────────────────────────────────
 
 function Scared:CanEnterCombat(): boolean
-	return false  -- never
+	return false
 end
 
 function Scared:ShouldForceFlee(): boolean
@@ -50,7 +59,6 @@ function Scared:ShouldForceFlee(): boolean
 end
 
 function Scared:GetFleeSpeed(): number?
-	-- Freeze overrides speed to 0, slow reduces it
 	if self._frozen then return 0 end
 	return self._currentSpeed
 end
@@ -66,7 +74,7 @@ function Scared:OnUpdate(dt: number)
 		end
 	end
 
-	-- ── Panic effect timer (freeze / slow) ────────────────────────────────
+	-- ── Panic effect timer ────────────────────────────────────────────────
 	if self._panicTimer > 0 then
 		self._panicTimer -= dt
 		if self._panicTimer <= 0 then
@@ -75,14 +83,15 @@ function Scared:OnUpdate(dt: number)
 		end
 	end
 
-	-- ── Proximity check — scan for any nearby player ──────────────────────
-	-- We do this ourselves because TargetSys ignores all players for Scared
-	local root         = self.Entity.RootPart
-	local anyInRange   = false
-	local anyInPanic   = false
+	-- ── Proximity scan ────────────────────────────────────────────────────
+	local root          = self.Entity.RootPart
+	local anyInRange    = false
+	local anyInPanic    = false
+	local nearestDist   = math.huge
+	local nearestPos    = nil
 
 	for _, player in ipairs(Players:GetPlayers()) do
-		local char = player.Character
+		local char  = player.Character
 		local pRoot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
 		if not pRoot then continue end
 
@@ -93,53 +102,105 @@ function Scared:OnUpdate(dt: number)
 
 		if dist <= CFG.FleeRadius then
 			anyInRange = true
+			if dist < nearestDist then
+				nearestDist = dist
+				nearestPos  = pRoot.Position
+			end
 		end
 
-		-- Closer range triggers panic effects (freeze/slow)
 		if dist <= Config.Detection.HearRange and self._panicTimer <= 0 then
 			anyInPanic = true
 		end
 	end
 
-	self._isFleeing = anyInRange
+	local wasAlreadyFleeing = self._isFleeing
+	self._isFleeing      = anyInRange
+	self._nearestThreat  = nearestPos  -- track for flee direction
 
-	-- Trigger a panic effect if a player is very close and no effect active
+	-- Panic effect when player gets very close
 	if anyInPanic and self._panicTimer <= 0 then
 		self:_triggerPanic()
 	end
 
-	-- If nothing is making us flee, reset speed to normal
-	if not self._isFleeing and not self._isAttacked then
-		if not self._frozen then
-			self._currentSpeed = CFG.PanicSpeed
+	-- Speed reset when nothing threatening
+	if not self._isFleeing and not self._isAttacked and not self._frozen then
+		self._currentSpeed = CFG.PanicSpeed
+	end
+
+	-- ── Flee pathing ──────────────────────────────────────────────────────
+	-- We handle our own flee direction since TargetSys.CurrentTarget is nil.
+	-- Re-path every 2 seconds or immediately when we just started fleeing.
+	local shouldBeMoving = self._isFleeing or self._isAttacked
+	if shouldBeMoving then
+		self._fleeUpdateTimer -= dt
+		local justStarted = anyInRange and not wasAlreadyFleeing
+
+		if justStarted or self._fleeUpdateTimer <= 0 then
+			self._fleeUpdateTimer = 2
+			self:_pathAwayFromThreat()
 		end
+	else
+		self._fleeUpdateTimer = 0
 	end
 end
 
 function Scared:OnDamaged(amount: number, attacker: Player?)
-	-- Being hit overrides everything — flee hard
 	self._isAttacked    = true
-	self._attackedTimer = 5  -- flee for 5s after being hit
+	self._attackedTimer = 5
 
-	-- Trigger immediate panic effect
+	-- Store attacker position as threat so we flee the right way
+	if attacker and attacker.Character then
+		local pRoot = attacker.Character:FindFirstChild("HumanoidRootPart") :: BasePart
+		if pRoot then
+			self._nearestThreat = pRoot.Position
+		end
+	end
+
 	self:_triggerPanic()
+	-- Immediately re-path away
+	self._fleeUpdateTimer = 0
+end
+
+-- ── Private ───────────────────────────────────────────────────────────────
+
+function Scared:_pathAwayFromThreat()
+	if self._frozen then return end  -- can't move when frozen
+
+	local entity   = self.Entity
+	local root     = entity.RootPart
+	local threat   = self._nearestThreat
+
+	local awayDir: Vector3
+	if threat then
+		awayDir = (root.Position - threat).Unit
+		awayDir = Vector3.new(awayDir.X, 0, awayDir.Z)
+		if awayDir.Magnitude < 0.01 then
+			-- Exactly on top of threat — pick random direction
+			awayDir = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5).Unit
+		else
+			awayDir = awayDir.Unit
+		end
+	else
+		-- No known threat pos — random direction
+		awayDir = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5).Unit
+	end
+
+	local dest = root.Position + awayDir * Config.Patrol.WanderRadius
+	entity.Pathfinder:MoveTo(dest)
 end
 
 function Scared:_triggerPanic()
 	local roll = math.random()
 
 	if roll < CFG.FreezeChance then
-		-- Freeze
 		self._frozen       = true
 		self._panicTimer   = CFG.FreezeDuration
 		self._currentSpeed = 0
 	elseif roll < CFG.FreezeChance + CFG.SlowChance then
-		-- Slow
 		self._frozen       = false
 		self._currentSpeed = CFG.PanicSpeed * CFG.SlowMultiplier
 		self._panicTimer   = CFG.SlowDuration
 	else
-		-- Full panic speed
 		self._frozen       = false
 		self._currentSpeed = CFG.PanicSpeed
 	end
