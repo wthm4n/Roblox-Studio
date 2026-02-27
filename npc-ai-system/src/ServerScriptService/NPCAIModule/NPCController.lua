@@ -11,7 +11,7 @@ local Config                = require(game.ReplicatedStorage.Shared.Config)
 local PathfindingController = require(game.ServerScriptService.NPCAIModule.PathfindingController) -- Server folder
 local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem) -- Server folder
 local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController) --
-local States                = require(script.Parent.States)
+local States                = require(game.ServerScriptService.NPCAIModule.States) -- Server folder
 
 local NPCController = {}
 NPCController.__index = NPCController
