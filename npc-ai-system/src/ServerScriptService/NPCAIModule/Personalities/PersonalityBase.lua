@@ -1,19 +1,11 @@
 --[[
 	PersonalityBase.lua
 	Base class all personality types inherit from.
-	Defines the interface every personality must implement.
 
-	A Personality is a layer ON TOP of the FSM.
-	It overrides or extends state behavior without rewriting the core system.
-
-	Each personality gets:
-	  - self.Entity  → the NPCController
-	  - self.Config  → personality-specific config table
-	  - :OnUpdate(dt) called every heartbeat
-	  - :OnStateChanged(newState, oldState) called on FSM transitions
-	  - :OnTargetFound(player) called when a target is detected
-	  - :OnTargetLost() called when target disappears
-	  - :OnDamaged(amount, attacker) called on damage
+	Added: CanEnterCombat() — returns true by default.
+	Scared and Passive override this to return false, which States.lua
+	checks before ever transitioning to Chase or Attack.
+	This replaces the broken task.defer approach entirely.
 --]]
 
 local PersonalityBase = {}
@@ -27,7 +19,10 @@ function PersonalityBase.new(entity: any, config: table)
 	return self
 end
 
--- Override these in subclasses
+function PersonalityBase:CanEnterCombat(): boolean
+	return true  -- Aggressive, Tactical, and base NPCs can fight
+end
+
 function PersonalityBase:OnUpdate(dt: number) end
 function PersonalityBase:OnStateChanged(newState: string, oldState: string) end
 function PersonalityBase:OnTargetFound(player: Player) end
