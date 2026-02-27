@@ -7,9 +7,9 @@ local Config = {}
 
 -- ─── Detection ─────────────────────────────────────────────────────────────
 Config.Detection = {
-	SightRange        = 120,
+	SightRange        = 120,   -- restore to sane value — 9999 breaks personalities
 	SightAngle        = 180,
-	HearRange         = 80,
+	HearRange         = 50,
 	LoseTargetTime    = 8,
 	RaycastCooldown   = 0.05,
 }
@@ -55,41 +55,41 @@ Config.Debug = {
 -- ─── Personalities ─────────────────────────────────────────────────────────
 
 Config.Passive = {
-	FleeRadius        = 30,    -- studs; player within this = flee
-	HideSearchRadius  = 40,    -- studs; search for cover within this
-	AllyAlertRadius   = 50,    -- studs; alert allies within this
+	FleeRadius        = 30,
+	HideSearchRadius  = 40,
+	AllyAlertRadius   = 50,
 	FleeSpeed         = 22,
-	HideDuration      = 8,     -- seconds to stay hidden before re-checking
+	HideDuration      = 8,
 }
 
 Config.Scared = {
 	FleeRadius        = 45,
 	PanicSpeed        = 20,
-	SlowChance        = 0.3,   -- 30% chance to "trip" and slow down
-	FreezeChance      = 0.2,   -- 20% chance to freeze briefly
-	FreezeDuration    = 1.5,   -- seconds frozen
-	SlowMultiplier    = 0.4,   -- speed multiplier when tripped
-	SlowDuration      = 2.0,   -- seconds of slow after trip
+	SlowChance        = 0.3,
+	FreezeChance      = 0.2,
+	FreezeDuration    = 1.5,
+	SlowMultiplier    = 0.4,
+	SlowDuration      = 2.0,
 }
 
 Config.Aggressive = {
-	HuntRange         = 150,   -- studs; will path to player even if not in sight
-	PredictSteps      = 12,    -- frames ahead to predict player position
-	ComboCount        = 3,     -- hits per combo
-	ComboWindow       = 0.4,   -- seconds between combo hits
-	RetreatingHP      = 0.30,  -- retreat below 30% HP
-	RetreatingDist    = 20,    -- studs to back off before re-engaging
-	ChaseSpeed        = 28,    -- faster than base
+	HuntRange         = 150,
+	PredictSteps      = 12,
+	ComboCount        = 3,
+	ComboWindow       = 0.4,
+	RetreatingHP      = 0.30,
+	RetreatingDist    = 20,
+	ChaseSpeed        = 28,
 }
 
 Config.Tactical = {
-	FlankAngle        = 90,      -- degrees off direct line to flank
-	FlankDistance     = 18,      -- studs from target to flank point
-	CoverSearchRadius = 35,      -- studs to search for cover
-	CoverMinHeight    = 3,       -- minimum part height to count as cover
-	CoordRadius       = 60,      -- studs; coordinate with NPCs within this
-	LoSCheckInterval  = 0.2,     -- how often to check if exposed
-	SuppressTime      = 3,       -- seconds to suppress before pushing
+	FlankAngle        = 90,
+	FlankDistance     = 18,
+	CoverSearchRadius = 35,
+	CoverMinHeight    = 3,
+	CoordRadius       = 60,
+	LoSCheckInterval  = 0.2,
+	SuppressTime      = 3,
 }
 
 return Config
