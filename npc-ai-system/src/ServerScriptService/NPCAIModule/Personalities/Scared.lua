@@ -1,7 +1,9 @@
 --[[
 	Scared.lua
-	Overrides CanEnterCombat() = false so States.lua never routes
-	this NPC into Chase or Attack. No task.defer needed.
+
+	Clean architecture: NO FSM:Transition calls anywhere in this file.
+	Scared only maintains its own internal state (frozen, tripped) and
+	answers questions that States.lua uses to decide transitions.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -14,87 +16,103 @@ local CFG = Config.Scared
 
 function Scared.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Scared)
-	self.Name          = "Scared"
-	self._frozen       = false
-	self._freezeTimer  = 0
-	self._tripped      = false
-	self._tripTimer    = 0
-	self._updateTimer  = 0
+	self.Name         = "Scared"
+	self._frozen      = false
+	self._freezeTimer = 0
+	self._tripped     = false
+	self._tripTimer   = 0
+	self._updateTimer = 0
+	self._nearestPlayer = nil
+	self._nearestDist   = math.huge
 	return self
 end
 
--- This is the only gate needed — States.lua checks this before Chase/Attack
+-- ── Questions States.lua asks ──────────────────────────────────────────────
+
 function Scared:CanEnterCombat(): boolean
 	return false
 end
 
+function Scared:ShouldForceFlee(): boolean
+	return self._nearestPlayer ~= nil and self._nearestDist <= CFG.FleeRadius
+end
+
+function Scared:GetFleeSpeed(): number?
+	if self._frozen then return 0 end
+	if self._tripped then return CFG.PanicSpeed * CFG.SlowMultiplier end
+	return CFG.PanicSpeed
+end
+
+-- ── Internal update — manages freeze/trip state and panic movement ─────────
+-- Does NOT call FSM:Transition. States.lua handles that.
+
 function Scared:OnUpdate(dt: number)
 	local entity = self.Entity
 
+	-- Tick timers
 	if self._frozen then
 		self._freezeTimer -= dt
-		entity.Humanoid.WalkSpeed = 0
-		entity.Pathfinder:Stop()
 		if self._freezeTimer <= 0 then
 			self._frozen = false
-			entity.Humanoid.WalkSpeed = CFG.PanicSpeed
 		end
-		return
 	end
 
 	if self._tripped then
 		self._tripTimer -= dt
 		if self._tripTimer <= 0 then
 			self._tripped = false
-			entity.Humanoid.WalkSpeed = CFG.PanicSpeed
 		end
-		return
 	end
 
+	-- Update speed based on current state
+	local speed = self:GetFleeSpeed()
+	if speed then
+		entity.Humanoid.WalkSpeed = speed
+	end
+
+	-- Throttled scan for nearest player
 	self._updateTimer += dt
 	if self._updateTimer < 0.25 then return end
 	self._updateTimer = 0
 
-	local rootPos       = entity.RootPart.Position
-	local nearest, dist = self:_nearestPlayer(rootPos)
+	self._nearestPlayer, self._nearestDist = self:_scanNearestPlayer()
 
-	if nearest and dist <= CFG.FleeRadius then
-		local state = entity.FSM:GetState()
-		if state ~= "Flee" then
-			entity.FSM:Transition("Flee")
-		end
+	-- If in flee range: apply panic behaviors
+	if self._nearestPlayer and self._nearestDist <= CFG.FleeRadius then
+		if not self._frozen then
+			-- Random freeze
+			if math.random() < CFG.FreezeChance then
+				self._frozen      = true
+				self._freezeTimer = CFG.FreezeDuration
+				entity.Pathfinder:Stop()
+				return
+			end
 
-		if not self._frozen and math.random() < CFG.FreezeChance then
-			self._frozen      = true
-			self._freezeTimer = CFG.FreezeDuration
-			return
-		end
+			-- Random trip/slow
+			if not self._tripped and math.random() < CFG.SlowChance then
+				self._tripped   = true
+				self._tripTimer = CFG.SlowDuration
+			end
 
-		if not self._tripped and math.random() < CFG.SlowChance then
-			self._tripped   = true
-			self._tripTimer = CFG.SlowDuration
-			entity.Humanoid.WalkSpeed = CFG.PanicSpeed * CFG.SlowMultiplier
-		end
-
-		self:_panicFlee(nearest)
-	else
-		entity.Humanoid.WalkSpeed = Config.Movement.WalkSpeed
-		if entity.FSM:GetState() == "Flee" then
-			entity.FSM:Transition("Idle")
+			self:_panicMove()
 		end
 	end
 end
 
 function Scared:OnDamaged(amount: number, attacker: Player?)
+	-- Getting hit = short freeze
 	self._frozen      = true
 	self._freezeTimer = 0.8
 	self.Entity.Pathfinder:Stop()
 end
 
-function Scared:_nearestPlayer(from: Vector3): (Player?, number)
+-- ── Private ────────────────────────────────────────────────────────────────
+
+function Scared:_scanNearestPlayer(): (Player?, number)
 	local Players  = game:GetService("Players")
 	local nearest  = nil
 	local nearDist = math.huge
+	local from     = self.Entity.RootPart.Position
 	for _, p in ipairs(Players:GetPlayers()) do
 		local char = p.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
@@ -106,10 +124,13 @@ function Scared:_nearestPlayer(from: Vector3): (Player?, number)
 	return nearest, nearDist
 end
 
-function Scared:_panicFlee(player: Player)
+function Scared:_panicMove()
 	local entity = self.Entity
-	local root   = entity.RootPart.Position
-	local pRoot  = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart
+	local player = self._nearestPlayer
+	if not player or not player.Character then return end
+
+	local root  = entity.RootPart.Position
+	local pRoot = player.Character:FindFirstChild("HumanoidRootPart") :: BasePart
 	if not pRoot then return end
 
 	local awayDir   = (root - pRoot.Position).Unit
@@ -121,7 +142,6 @@ function Scared:_panicFlee(player: Player)
 		awayDir.X * sinA + awayDir.Z * cosA
 	).Unit
 
-	entity.Humanoid.WalkSpeed = CFG.PanicSpeed
 	entity.Pathfinder:MoveTo(root + panicDir * 20)
 end
 
