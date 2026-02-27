@@ -7,7 +7,13 @@
 	  entity.Personality:ShouldForceFlee() — should we flee regardless of HP?
 	  entity.Personality:GetFleeSpeed()    — personality-specific flee speed
 
-	Personalities never call FSM:Transition themselves. No fighting, no spam.
+	FIXED:
+	  - Chase.OnUpdate now exits to Idle if CanEnterCombat() is false.
+	    Previously if a Passive NPC somehow entered Chase (via the threat
+	    table bug), it would stay there forever since there was no exit guard.
+	  - Attack.OnUpdate same fix — gates on CanEnterCombat().
+	  - This means even if a personality-less bug gets an NPC into Chase/Attack,
+	    the state itself will kick it back out if the personality says no.
 --]]
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
@@ -48,12 +54,10 @@ local Idle = {
 			return
 		end
 
-		if entity.TargetSys.CurrentTarget then
-    if entity.Personality:CanEnterCombat() then
-        entity.FSM:Transition("Chase")
-        return
-    end
-end
+		if entity.TargetSys.CurrentTarget and entity.Personality:CanEnterCombat() then
+			entity.FSM:Transition("Chase")
+			return
+		end
 
 		if entity._idleTimer >= 1.5 then
 			entity.FSM:Transition("Patrol")
@@ -85,12 +89,10 @@ local Patrol = {
 			return
 		end
 
-		if entity.TargetSys.CurrentTarget then
-    if entity.Personality:CanEnterCombat() then
-        entity.FSM:Transition("Chase")
-        return
-    end
-end
+		if entity.TargetSys.CurrentTarget and entity.Personality:CanEnterCombat() then
+			entity.FSM:Transition("Chase")
+			return
+		end
 
 		if entity._patrolWaiting then
 			entity._patrolWaitTimer += dt
@@ -113,11 +115,25 @@ local Chase = {
 	Name = "Chase",
 
 	OnEnter = function(entity)
+		-- Safety: if this NPC can't enter combat, immediately bail back to Idle.
+		-- This acts as a second line of defense in case something bypasses the
+		-- Idle/Patrol guards above (e.g. Aggressive retreat re-entry).
+		if not entity.Personality:CanEnterCombat() then
+			entity.FSM:Transition("Idle")
+			return
+		end
 		setSpeed(entity, Config.Movement.ChaseSpeed)
 		entity._chaseRecalcTimer = 0
 	end,
 
 	OnUpdate = function(entity, dt)
+		-- FIXED: if personality revokes combat mid-chase (e.g. Passive calmed down)
+		-- kick back to Idle immediately rather than continuing to chase.
+		if not entity.Personality:CanEnterCombat() then
+			entity.FSM:Transition("Idle")
+			return
+		end
+
 		if shouldFlee(entity) then
 			entity.FSM:Transition("Flee")
 			return
@@ -166,6 +182,11 @@ local Attack = {
 	Name = "Attack",
 
 	OnEnter = function(entity)
+		-- Safety: same guard as Chase
+		if not entity.Personality:CanEnterCombat() then
+			entity.FSM:Transition("Idle")
+			return
+		end
 		setSpeed(entity, Config.Movement.WalkSpeed)
 		entity._attackTimer = 0
 		local target = entity.TargetSys.CurrentTarget
@@ -181,6 +202,12 @@ local Attack = {
 	end,
 
 	OnUpdate = function(entity, dt)
+		-- FIXED: same guard
+		if not entity.Personality:CanEnterCombat() then
+			entity.FSM:Transition("Idle")
+			return
+		end
+
 		if shouldFlee(entity) then
 			entity.FSM:Transition("Flee")
 			return
@@ -222,7 +249,6 @@ local Flee = {
 	Name = "Flee",
 
 	OnEnter = function(entity)
-		-- Use personality flee speed if provided, else default
 		local speed = entity.Personality:GetFleeSpeed() or Config.Movement.FleeSpeed
 		setSpeed(entity, speed)
 		entity._fleeTimer = 0
@@ -236,10 +262,8 @@ local Flee = {
 		local speed = entity.Personality:GetFleeSpeed() or Config.Movement.FleeSpeed
 		setSpeed(entity, speed)
 
-		-- Exit Flee only when BOTH conditions are clear:
-		-- 1. HP is no longer critically low
-		-- 2. Personality no longer forcing flee
-		local hpOk = not entity:_shouldFlee()
+		-- Exit Flee only when BOTH conditions are clear
+		local hpOk         = not entity:_shouldFlee()
 		local personalityOk = not entity.Personality:ShouldForceFlee()
 
 		if hpOk and personalityOk then
