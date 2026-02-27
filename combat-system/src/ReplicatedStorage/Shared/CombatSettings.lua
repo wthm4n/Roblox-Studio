@@ -77,8 +77,11 @@ CombatSettings.Animations = {
 
 -- ══════════════════════════════════════════
 --  AUDIO
+--  Hit sounds play ONLY on confirmed hits (via HitConfirm remote).
+--  Swing "whoosh" sounds are NOT played — add them here later if desired.
 -- ══════════════════════════════════════════
 CombatSettings.Audio = {
+	-- Played on the attacker's client when a hit is confirmed by the server.
 	M1Sound    = "rbxassetid://137630794322989",
 	M2Sound    = "rbxassetid://137630794322989",
 	M3Sound    = "rbxassetid://137630794322989",
@@ -89,11 +92,40 @@ CombatSettings.Audio = {
 }
 
 -- ══════════════════════════════════════════
+--  HIT HIGHLIGHT  (red flash on damaged character)
+-- ══════════════════════════════════════════
+CombatSettings.HitHighlight = {
+	FillColor       = Color3.fromRGB(255, 40, 40),
+	OutlineColor    = Color3.fromRGB(255, 0, 0),
+	FillTransparency    = 0.35,
+	OutlineTransparency = 0,
+	Duration        = 0.18,   -- seconds before highlight is removed
+}
+
+-- ══════════════════════════════════════════
+--  CAMERA SHAKE  (attacker's local camera on each M1 hit)
+-- ══════════════════════════════════════════
+CombatSettings.CameraShake = {
+	-- Per combo hit: { magnitude, duration (s), frequency }
+	-- Finisher (M5) is index 5 and hits harder.
+	[1] = { Magnitude = 0.25, Duration = 0.12, Frequency = 18 },
+	[2] = { Magnitude = 0.28, Duration = 0.12, Frequency = 18 },
+	[3] = { Magnitude = 0.32, Duration = 0.14, Frequency = 20 },
+	[4] = { Magnitude = 0.38, Duration = 0.15, Frequency = 20 },
+	[5] = { Magnitude = 0.65, Duration = 0.22, Frequency = 14 },  -- finisher
+}
+
+-- ══════════════════════════════════════════
 --  REMOTES  (string keys only – actual RemoteEvents live in ReplicatedStorage)
 -- ══════════════════════════════════════════
 CombatSettings.Remotes = {
 	UsedM1          = "UsedM1",
 	ApplyHitEffect  = "ApplyHitEffect",
+	-- Fired only when a hit actually lands (victim confirmed server-side).
+	-- Payload: (attacker: Player, victim: Player, comboIndex: number)
+	-- Used by the attacker's client to: play hit sound + trigger camera shake.
+	-- Used by ALL clients to: flash the red highlight on the victim.
+	HitConfirm      = "HitConfirm",
 }
 
 return CombatSettings
