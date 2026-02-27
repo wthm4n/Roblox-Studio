@@ -8,7 +8,7 @@ local Config = {}
 
 -- ─── Detection ─────────────────────────────────────────────────────────────
 Config.Detection = {
-	SightRange        = 500,   -- studs; max distance NPC can "see"
+	SightRange        = 800,   -- studs; max distance NPC can "see"
 	SightAngle        = 180,   -- degrees total FOV (180 = full front hemisphere)
 	HearRange         = 500,    -- studs; sound-based detection (no LoS needed)
 	LoseTargetTime    = 8,     -- seconds before NPC gives up on last known pos
