@@ -162,15 +162,16 @@ end
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 --[[
-	RagdollModule.Apply(victim, attacker, duration, launchForce)
+	RagdollModule.Apply(victim, attacker, duration, launchForce, launchUp)
 	  victim      : Player
 	  attacker    : Player  — used to calculate launch direction (away from them)
 	  duration    : number  — seconds until auto-recovery
-	  launchForce : number  — studs/s launch velocity
+	  launchForce : number  — horizontal studs/s (how far back)
+	  launchUp    : number  — vertical studs/s (how high the pop is)
 
 	If victim is already ragdolled, refreshes the timer (keeps them down mid-combo).
 ]]
-function RagdollModule.Apply(victim: Player, attacker: Player, duration: number, launchForce: number)
+function RagdollModule.Apply(victim: Player, attacker: Player, duration: number, launchForce: number, launchUp: number)
 	assert(RunService:IsServer())
 
 	local s = _states[victim]
@@ -198,26 +199,25 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 		_applyRagdoll(char)
 	end
 
-	-- ── Launch velocity: pure horizontal push, no upward arc ───────────────────
-	-- Victim slides/stumbles along the ground rather than flying into the air.
-	-- We zero out any existing vertical velocity first so they don't rocket up
-	-- if they were already jumping.
+	-- ── Launch velocity: back + small upward pop → falls to ground ──────────────
+	-- Horizontal component sends them 5-10 studs back.
+	-- Vertical component gives a short arc (2-3 studs up) so they visibly get
+	-- knocked back and crash down rather than just sliding flat.
 	if attackerHRP then
 		local launchDir = (victimHRP.Position - attackerHRP.Position)
-		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)  -- fully flattened
+		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)  -- flatten to XZ plane
 		if launchDir.Magnitude < 0.1 then
-			launchDir = -attackerHRP.CFrame.LookVector
-			launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)
+			-- Point-blank fallback: use attacker's look vector reversed
+			local look = attackerHRP.CFrame.LookVector
+			launchDir = Vector3.new(look.X, 0, look.Z)
 		end
 		launchDir = launchDir.Unit
-		-- Tiny downward nudge (-0.15) so the body immediately touches the ground
-		-- instead of floating briefly after the motors are disabled
-		local finalVel = Vector3.new(
+
+		victimHRP.AssemblyLinearVelocity = Vector3.new(
 			launchDir.X * launchForce,
-			-2,                            -- small downward press, not a spike
+			launchUp,     -- upward pop — controlled, not crazy
 			launchDir.Z * launchForce
 		)
-		victimHRP.AssemblyLinearVelocity = finalVel
 	end
 
 	-- ── Keep stun pinned for the duration ────────────────────────────────────
