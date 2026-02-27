@@ -213,11 +213,14 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 		end
 		launchDir = launchDir.Unit
 
-		victimHRP.AssemblyLinearVelocity = Vector3.new(
-			launchDir.X * launchForce,
-			launchUp,     -- upward pop — controlled, not crazy
-			launchDir.Z * launchForce
-		)
+		local mass = victimHRP.AssemblyMass
+local impulse = Vector3.new(
+    launchDir.X * launchForce,
+    launchUp,
+    launchDir.Z * launchForce
+) * mass
+
+victimHRP:ApplyImpulse(impulse)
 	end
 
 	-- ── Keep stun pinned for the duration ────────────────────────────────────
