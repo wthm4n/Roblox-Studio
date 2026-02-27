@@ -1,34 +1,49 @@
 --[[
 	AnimationController.lua
-	
-	Since the NPC already has Roblox's built-in "Animate" LocalScript,
-	locomotion anims (idle, walk, run, swim, climb, jump) are handled
-	automatically — no server code needed for those.
-
-	This module only handles:
-	  - Attack  (action anim, server-driven)
-	  - Hurt    (action anim, server-driven)
-
-	Both are fired via a RemoteEvent to the client so the Animate
-	script doesn't fight with us.
+	All vanilla R6 Roblox animation IDs hardcoded directly.
+	Handles everything: idle, walk, run, jump, fall, climb, swim + attack, hurt, death.
 --]]
 
 local AnimationController = {}
 AnimationController.__index = AnimationController
 
--- R6 action animation IDs
--- These play ON TOP of whatever Animate is doing (higher priority)
-local ACTION_IDS = {
-	Attack = "rbxassetid://115362763052284",  -- default punch/tool slash
-	Hurt   = "rbxassetid://73704150667330",  -- default hit react
+local ANIM_IDS = {
+	-- Locomotion (from the default Roblox Animate script)
+	idle  = "http://www.roblox.com/asset/?id=180435571",
+	walk  = "http://www.roblox.com/asset/?id=180426354",
+	run   = "http://www.roblox.com/asset/?id=180426354", -- R6 has no separate run
+	jump  = "http://www.roblox.com/asset/?id=125750702",
+	fall  = "http://www.roblox.com/asset/?id=180436148",
+	climb = "http://www.roblox.com/asset/?id=180436334",
+	swim  = "http://www.roblox.com/asset/?id=180435613",
+
+	-- Actions
+	Attack = "http://www.roblox.com/asset/?id=129967390", -- toolslash
+	Hurt   = "http://www.roblox.com/asset/?id=180435397",
+	Death  = "http://www.roblox.com/asset/?id=180436148",
+}
+
+local LOOPED = { idle=true, walk=true, run=true, climb=true, swim=true }
+
+local PRIORITY = {
+	idle   = Enum.AnimationPriority.Idle,
+	walk   = Enum.AnimationPriority.Movement,
+	run    = Enum.AnimationPriority.Movement,
+	jump   = Enum.AnimationPriority.Movement,
+	fall   = Enum.AnimationPriority.Movement,
+	climb  = Enum.AnimationPriority.Movement,
+	swim   = Enum.AnimationPriority.Movement,
+	Attack = Enum.AnimationPriority.Action,
+	Hurt   = Enum.AnimationPriority.Action,
+	Death  = Enum.AnimationPriority.Action4,
 }
 
 local FADE = {
-	Attack = 0.05,
-	Hurt   = 0.05,
+	idle=0.2, walk=0.15, run=0.15, jump=0.1, fall=0.3, climb=0.1, swim=0.2,
+	Attack=0.05, Hurt=0.05, Death=0.1,
 }
 
--- ─── Constructor ───────────────────────────────────────────────────────────
+-- ── Constructor ────────────────────────────────────────────────────────────
 
 function AnimationController.new(npc: Model)
 	local self = setmetatable({}, AnimationController)
@@ -42,16 +57,33 @@ function AnimationController.new(npc: Model)
 		self.Animator.Parent = self.Humanoid
 	end
 
-	self._tracks = {}
-	self._dead   = false
+	self._tracks  = {}
+	self._current = nil  -- current locomotion name
+	self._dead    = false
 
-	self:_loadActions()
+	self:_loadAll()
 	return self
 end
 
--- ─── Public ────────────────────────────────────────────────────────────────
+-- ── Public ─────────────────────────────────────────────────────────────────
 
--- Play Attack or Hurt on top of the Animate script
+-- Drive locomotion based on NPC speed/state — call from NPCController
+function AnimationController:SetLocomotion(animName: string)
+	if self._dead then return end
+	if self._current == animName then return end
+
+	local track = self._tracks[animName]
+	if not track then return end
+
+	if self._current and self._tracks[self._current] then
+		self._tracks[self._current]:Stop(FADE[animName] or 0.15)
+	end
+
+	track:Play(FADE[animName] or 0.15)
+	self._current = animName
+end
+
+-- One-shot actions: Attack, Hurt, Death
 function AnimationController:PlayAction(animName: string): AnimationTrack?
 	if self._dead and animName ~= "Death" then return nil end
 
@@ -60,61 +92,51 @@ function AnimationController:PlayAction(animName: string): AnimationTrack?
 
 	if track.IsPlaying then track:Stop(0) end
 	track:Play(FADE[animName] or 0.05)
+
+	if animName == "Death" then
+		self._dead = true
+		if self._current and self._tracks[self._current] then
+			self._tracks[self._current]:Stop(0.2)
+			self._current = nil
+		end
+	end
+
 	return track
 end
 
--- Call this on death — Animate handles the fall anim itself,
--- we just stop any action tracks
 function AnimationController:OnDeath()
-	self._dead = true
-	for _, track in pairs(self._tracks) do
-		if track.IsPlaying then track:Stop(0.1) end
-	end
+	self:PlayAction("Death")
 end
 
--- These are no-ops now — Animate handles locomotion automatically
--- Kept so NPCController doesn't error if it calls them
-function AnimationController:SetLocomotion(_animName: string) end
-function AnimationController:StopAll() end
-
 function AnimationController:IsPlayingAction(animName: string): boolean
-	local track = self._tracks[animName]
-	return track ~= nil and track.IsPlaying
+	local t = self._tracks[animName]
+	return t ~= nil and t.IsPlaying
+end
+
+function AnimationController:StopAll()
+	for _, t in pairs(self._tracks) do
+		if t.IsPlaying then t:Stop(0) end
+	end
+	self._current = nil
 end
 
 function AnimationController:Destroy()
-	for _, track in pairs(self._tracks) do
-		if track.IsPlaying then track:Stop(0) end
-	end
+	self:StopAll()
 	self._tracks = {}
 end
 
--- ─── Private ───────────────────────────────────────────────────────────────
+-- ── Private ────────────────────────────────────────────────────────────────
 
-function AnimationController:_loadActions()
-	-- Check for custom overrides in an Animations folder first
-	local animFolder = self.NPC:FindFirstChild("Animations")
-
-	for name, defaultId in pairs(ACTION_IDS) do
-		local animObj = Instance.new("Animation")
-
-		if animFolder then
-			local custom = animFolder:FindFirstChild(name)
-			animObj.AnimationId = (custom and custom:IsA("Animation"))
-				and custom.AnimationId
-				or defaultId
-		else
-			animObj.AnimationId = defaultId
-		end
-
-		local track = self.Animator:LoadAnimation(animObj)
-		track.Priority = Enum.AnimationPriority.Action  -- always on top of Animate
-		track.Looped   = false
+function AnimationController:_loadAll()
+	for name, id in pairs(ANIM_IDS) do
+		local anim = Instance.new("Animation")
+		anim.AnimationId = id
+		local track = self.Animator:LoadAnimation(anim)
+		track.Priority = PRIORITY[name] or Enum.AnimationPriority.Movement
+		track.Looped   = LOOPED[name] or false
 		self._tracks[name] = track
 	end
-
-	print("[AnimationController] Action anims loaded for", self.NPC.Name,
-		"(locomotion handled by Animate script)")
+	print("[AnimationController] Loaded all R6 anims for", self.NPC.Name)
 end
 
 return AnimationController
