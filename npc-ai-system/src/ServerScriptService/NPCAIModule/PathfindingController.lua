@@ -1,17 +1,17 @@
 --[[
 	PathfindingController.lua
-	Wraps PathfindingService with:
-	  - Jump / Climb / Swim support via AgentParameters
-	  - Dynamic recalculation on block
-	  - Stuck detection & recovery
-	  - NoPath spam prevention (cooldown before retry)
-	  - Debug path visualization
+	Fixed for:
+	  - Maze / wall navigation
+	  - Tighter agent size for narrow corridors
+	  - Smarter stuck recovery (tries intermediate points)
+	  - Jump / Climb / Swim support
+	  - NoPath spam prevention
+	  - Debug visualization
 --]]
 
 local PathfindingService = game:GetService("PathfindingService")
-local RunService         = game:GetService("RunService")
 
-local Config = require(game.ReplicatedStorage.Shared.Config)
+local Config = require(script.Parent.Parent.Shared.Config)
 
 local PathfindingController = {}
 PathfindingController.__index = PathfindingController
@@ -37,7 +37,6 @@ end
 
 local function drawWaypoints(npcId: string, waypoints: { PathWaypoint })
 	if not Config.Debug.Enabled or not Config.Debug.ShowPath then return end
-
 	local folder = getDebugFolder()
 	local sub = folder:FindFirstChild(npcId) or Instance.new("Folder")
 	sub.Name = npcId
@@ -46,7 +45,7 @@ local function drawWaypoints(npcId: string, waypoints: { PathWaypoint })
 
 	for i, wp in ipairs(waypoints) do
 		local part = Instance.new("Part")
-		part.Size = Vector3.new(0.5, 0.5, 0.5)
+		part.Size = Vector3.new(0.6, 0.6, 0.6)
 		part.Shape = Enum.PartType.Ball
 		part.Material = Enum.Material.Neon
 		part.Color = (i == 1) and Config.Debug.WaypointColor or Config.Debug.PathColor
@@ -59,15 +58,17 @@ local function drawWaypoints(npcId: string, waypoints: { PathWaypoint })
 		if i > 1 then
 			local prev = waypoints[i - 1].Position
 			local dist = (wp.Position - prev).Magnitude
-			local beam = Instance.new("Part")
-			beam.Size = Vector3.new(0.1, 0.1, dist)
-			beam.CFrame = CFrame.lookAt(prev, wp.Position) * CFrame.new(0, 0, -dist / 2)
-			beam.Anchored = true
-			beam.CanCollide = false
-			beam.CastShadow = false
-			beam.Material = Enum.Material.Neon
-			beam.Color = Config.Debug.PathColor
-			beam.Parent = sub
+			if dist > 0.1 then
+				local beam = Instance.new("Part")
+				beam.Size = Vector3.new(0.08, 0.08, dist)
+				beam.CFrame = CFrame.lookAt(prev, wp.Position) * CFrame.new(0, 0, -dist / 2)
+				beam.Anchored = true
+				beam.CanCollide = false
+				beam.CastShadow = false
+				beam.Material = Enum.Material.Neon
+				beam.Color = Config.Debug.PathColor
+				beam.Parent = sub
+			end
 		end
 	end
 end
@@ -77,19 +78,25 @@ end
 function PathfindingController.new(npc: Model)
 	local self = setmetatable({}, PathfindingController)
 
-	self.NPC        = npc
-	self.Humanoid   = npc:FindFirstChildOfClass("Humanoid") :: Humanoid
-	self.RootPart   = npc:FindFirstChild("HumanoidRootPart") :: BasePart
-	self.NpcId      = npc.Name .. "_" .. tostring(npc:GetAttribute("NPCID") or math.random(1000, 9999))
+	self.NPC      = npc
+	self.Humanoid = npc:FindFirstChildOfClass("Humanoid") :: Humanoid
+	self.RootPart = npc:FindFirstChild("HumanoidRootPart") :: BasePart
+	self.NpcId    = npc.Name .. "_" .. tostring(npc:GetAttribute("NPCID") or math.random(1000, 9999))
 
-	-- Smaller radius fits trusses. AgentCanClimb MUST be true for truss support.
-	-- Low Climb cost = NPC prefers climbing over long detours.
+	--[[
+		AgentRadius 1.0 — tight enough to fit through doorways and maze corridors.
+		Roblox default character is ~1 stud wide each side.
+		Using 2.0 was causing NoPath in any corridor < 4 studs wide.
+
+		WaypointSpacing 2 — more waypoints = smoother cornering around walls.
+		Dense waypoints mean the NPC turns earlier instead of walking into corners.
+	--]]
 	self._path = PathfindingService:CreatePath({
-		AgentRadius     = 1.5,
+		AgentRadius     = 1.0,
 		AgentHeight     = 5,
 		AgentCanJump    = true,
 		AgentCanClimb   = true,
-		WaypointSpacing = 3,
+		WaypointSpacing = 2,
 		Costs = {
 			Water = 20,
 			Climb = 0.5,
@@ -102,11 +109,11 @@ function PathfindingController.new(npc: Model)
 	self._destination    = nil
 	self._lastPos        = Vector3.zero
 	self._lastMovedAt    = 0
+	self._stuckCount     = 0       -- how many times stuck in a row
 	self._connections    = {}
-	self._noPathAt       = -999   -- timestamp of last NoPath failure
-	self._noPathCooldown = 3      -- seconds before retrying after NoPath
+	self._noPathAt       = -999
+	self._noPathCooldown = 2
 
-	-- Recalculate when something blocks the current path
 	local blockedConn = self._path.Blocked:Connect(function(blockedIdx)
 		if blockedIdx >= self._wpIndex then
 			self:_recalculate()
@@ -120,10 +127,7 @@ end
 -- ─── Public API ────────────────────────────────────────────────────────────
 
 function PathfindingController:MoveTo(destination: Vector3, onComplete: (() -> ())?)
-	-- Respect NoPath cooldown — stop hammering a failed path
-	if (tick() - self._noPathAt) < self._noPathCooldown then
-		return
-	end
+	if (tick() - self._noPathAt) < self._noPathCooldown then return end
 
 	self._destination = destination
 	self._onComplete  = onComplete
@@ -136,6 +140,7 @@ function PathfindingController:Stop()
 	self._destination = nil
 	self._waypoints   = {}
 	self._wpIndex     = 1
+	self._stuckCount  = 0
 	if self.Humanoid then
 		self.Humanoid:MoveTo(self.RootPart.Position)
 	end
@@ -147,29 +152,45 @@ function PathfindingController:Update(dt: number)
 
 	local now        = tick()
 	local currentPos = self.RootPart.Position
-	local movedDist  = (currentPos - self._lastPos).Magnitude
 
-	-- Stuck detection
+	-- ── Stuck detection ──────────────────────────────────────────────────
+	local movedDist = (currentPos - self._lastPos).Magnitude
+
 	if movedDist > Config.Movement.StuckThreshold then
 		self._lastPos     = currentPos
 		self._lastMovedAt = now
+		self._stuckCount  = 0
 	elseif (now - self._lastMovedAt) > Config.Movement.StuckTimeout then
 		self._lastMovedAt = now
+		self._stuckCount += 1
+
 		if (now - self._noPathAt) >= self._noPathCooldown then
-			self:_recalculate()
+			if self._stuckCount >= 3 then
+				-- Stuck repeatedly → try a random nearby intermediate point
+				-- to "unstick" from the wall before pathing to target
+				self._stuckCount = 0
+				self:_unstick()
+			else
+				self:_recalculate()
+			end
 		end
 		return
 	end
 
-	-- Advance to next waypoint when close enough
+	-- ── Waypoint advancement ─────────────────────────────────────────────
 	local wp = self._waypoints[self._wpIndex]
 	if not wp then
 		self:_onPathComplete()
 		return
 	end
 
-	local dist = (self.RootPart.Position - wp.Position).Magnitude
-	if dist <= Config.Movement.WaypointReachDist then
+	-- Use tighter reach distance so NPC properly turns corners
+	-- instead of cutting through walls
+	local reachDist = Config.Movement.WaypointReachDist
+	local dist = (Vector3.new(currentPos.X, 0, currentPos.Z)
+		- Vector3.new(wp.Position.X, 0, wp.Position.Z)).Magnitude
+
+	if dist <= reachDist then
 		self._wpIndex += 1
 		wp = self._waypoints[self._wpIndex]
 		if not wp then
@@ -178,7 +199,6 @@ function PathfindingController:Update(dt: number)
 		end
 	end
 
-	-- Trigger jump for jump waypoints
 	if wp.Action == Enum.PathWaypointAction.Jump then
 		self.Humanoid.Jump = true
 	end
@@ -194,16 +214,13 @@ function PathfindingController:_computeAndMove(destination: Vector3)
 	end)
 
 	if not success or self._path.Status ~= Enum.PathStatus.Success then
-		-- Only warn once per cooldown window — no spam
 		if (tick() - self._noPathAt) >= self._noPathCooldown then
-			warn("[PathfindingController] NoPath —", err or self._path.Status,
-				"— retrying in", self._noPathCooldown .. "s")
+			warn("[Pathfinding] NoPath to destination —", err or self._path.Status)
 			self._noPathAt = tick()
 		end
-
-		-- Fallback: direct move for short distances (open flat areas)
-		local directDist = (self.RootPart.Position - destination).Magnitude
-		if directDist < 20 then
+		-- Direct fallback only for very short open distances
+		local d = (self.RootPart.Position - destination).Magnitude
+		if d < 15 then
 			self.Humanoid:MoveTo(destination)
 		end
 		return
@@ -213,12 +230,50 @@ function PathfindingController:_computeAndMove(destination: Vector3)
 	self._wpIndex     = 2
 	self._lastPos     = self.RootPart.Position
 	self._lastMovedAt = tick()
+	self._stuckCount  = 0
 
 	drawWaypoints(self.NpcId, self._waypoints)
 
 	local first = self._waypoints[self._wpIndex]
 	if first then
 		self.Humanoid:MoveTo(first.Position)
+	end
+end
+
+-- Unstick: path to a random point nearby, then resume original destination
+function PathfindingController:_unstick()
+	if not self._destination then return end
+
+	local root   = self.RootPart.Position
+	local angle  = math.random() * math.pi * 2
+	-- Try a point 6 studs away in a random direction
+	local midPoint = root + Vector3.new(math.cos(angle) * 6, 0, math.sin(angle) * 6)
+	local dest     = self._destination
+
+	-- Path to midpoint first
+	local success, _ = pcall(function()
+		self._path:ComputeAsync(root, midPoint)
+	end)
+
+	if success and self._path.Status == Enum.PathStatus.Success then
+		self._waypoints   = self._path:GetWaypoints()
+		self._wpIndex     = 2
+		self._lastPos     = root
+		self._lastMovedAt = tick()
+		drawWaypoints(self.NpcId, self._waypoints)
+
+		local first = self._waypoints[self._wpIndex]
+		if first then
+			self.Humanoid:MoveTo(first.Position)
+		end
+
+		-- After reaching midpoint, re-path to original destination
+		self._onComplete = function()
+			self:MoveTo(dest)
+		end
+	else
+		-- Even midpoint failed — just try the destination again
+		self:_computeAndMove(dest)
 	end
 end
 
@@ -232,7 +287,9 @@ function PathfindingController:_onPathComplete()
 	self._waypoints = {}
 	clearDebugParts(self.NpcId)
 	if self._onComplete then
-		self._onComplete()
+		local cb = self._onComplete
+		self._onComplete = nil
+		cb()
 	end
 end
 
