@@ -4,13 +4,14 @@
 	  - Jump / Climb / Swim support via AgentParameters
 	  - Dynamic recalculation on block
 	  - Stuck detection & recovery
+	  - NoPath spam prevention (cooldown before retry)
 	  - Debug path visualization
 --]]
 
 local PathfindingService = game:GetService("PathfindingService")
 local RunService         = game:GetService("RunService")
 
-local Config = require(game.ReplicatedStorage.Shared.Config)
+local Config = require(script.Parent.Parent.Shared.Config)
 
 local PathfindingController = {}
 PathfindingController.__index = PathfindingController
@@ -81,26 +82,31 @@ function PathfindingController.new(npc: Model)
 	self.RootPart   = npc:FindFirstChild("HumanoidRootPart") :: BasePart
 	self.NpcId      = npc.Name .. "_" .. tostring(npc:GetAttribute("NPCID") or math.random(1000, 9999))
 
-	self._path      = PathfindingService:CreatePath({
-		AgentRadius        = 2,
-		AgentHeight        = 5,
-		AgentCanJump       = true,
-		AgentCanClimb      = true,   -- truss support
-		WaypointSpacing    = 4,
+	-- Smaller radius fits trusses. AgentCanClimb MUST be true for truss support.
+	-- Low Climb cost = NPC prefers climbing over long detours.
+	self._path = PathfindingService:CreatePath({
+		AgentRadius     = 1.5,
+		AgentHeight     = 5,
+		AgentCanJump    = true,
+		AgentCanClimb   = true,
+		WaypointSpacing = 3,
 		Costs = {
-			Water = 20,              -- penalize water — swim if needed
+			Water = 20,
+			Climb = 0.5,
 		},
 	})
 
-	self._waypoints     = {}
-	self._wpIndex       = 1
-	self._active        = false
-	self._destination   = nil
-	self._lastPos       = Vector3.zero
-	self._lastMovedAt   = 0
-	self._connections   = {}
+	self._waypoints      = {}
+	self._wpIndex        = 1
+	self._active         = false
+	self._destination    = nil
+	self._lastPos        = Vector3.zero
+	self._lastMovedAt    = 0
+	self._connections    = {}
+	self._noPathAt       = -999   -- timestamp of last NoPath failure
+	self._noPathCooldown = 3      -- seconds before retrying after NoPath
 
-	-- Listen for path blocked events
+	-- Recalculate when something blocks the current path
 	local blockedConn = self._path.Blocked:Connect(function(blockedIdx)
 		if blockedIdx >= self._wpIndex then
 			self:_recalculate()
@@ -113,8 +119,12 @@ end
 
 -- ─── Public API ────────────────────────────────────────────────────────────
 
--- Begin moving toward target position. Calls onComplete when done or failed.
 function PathfindingController:MoveTo(destination: Vector3, onComplete: (() -> ())?)
+	-- Respect NoPath cooldown — stop hammering a failed path
+	if (tick() - self._noPathAt) < self._noPathCooldown then
+		return
+	end
+
 	self._destination = destination
 	self._onComplete  = onComplete
 	self._active      = true
@@ -132,26 +142,26 @@ function PathfindingController:Stop()
 	clearDebugParts(self.NpcId)
 end
 
--- Must be called from a RunService loop each frame
 function PathfindingController:Update(dt: number)
 	if not self._active or #self._waypoints == 0 then return end
 
-	-- Stuck detection
-	local now = tick()
+	local now        = tick()
 	local currentPos = self.RootPart.Position
 	local movedDist  = (currentPos - self._lastPos).Magnitude
 
+	-- Stuck detection
 	if movedDist > Config.Movement.StuckThreshold then
-		self._lastPos      = currentPos
-		self._lastMovedAt  = now
-	elseif (now - self._lastMovedAt) > Config.Movement.StuckTimeout then
-		-- Stuck — try recalculating
+		self._lastPos     = currentPos
 		self._lastMovedAt = now
-		self:_recalculate()
+	elseif (now - self._lastMovedAt) > Config.Movement.StuckTimeout then
+		self._lastMovedAt = now
+		if (now - self._noPathAt) >= self._noPathCooldown then
+			self:_recalculate()
+		end
 		return
 	end
 
-	-- Advance waypoints
+	-- Advance to next waypoint when close enough
 	local wp = self._waypoints[self._wpIndex]
 	if not wp then
 		self:_onPathComplete()
@@ -168,7 +178,7 @@ function PathfindingController:Update(dt: number)
 		end
 	end
 
-	-- Handle special waypoint actions
+	-- Trigger jump for jump waypoints
 	if wp.Action == Enum.PathWaypointAction.Jump then
 		self.Humanoid.Jump = true
 	end
@@ -184,20 +194,28 @@ function PathfindingController:_computeAndMove(destination: Vector3)
 	end)
 
 	if not success or self._path.Status ~= Enum.PathStatus.Success then
-		warn("[PathfindingController] Path failed:", err or self._path.Status)
-		-- Fallback: direct move (works for short open distances)
-		self.Humanoid:MoveTo(destination)
+		-- Only warn once per cooldown window — no spam
+		if (tick() - self._noPathAt) >= self._noPathCooldown then
+			warn("[PathfindingController] NoPath —", err or self._path.Status,
+				"— retrying in", self._noPathCooldown .. "s")
+			self._noPathAt = tick()
+		end
+
+		-- Fallback: direct move for short distances (open flat areas)
+		local directDist = (self.RootPart.Position - destination).Magnitude
+		if directDist < 20 then
+			self.Humanoid:MoveTo(destination)
+		end
 		return
 	end
 
-	self._waypoints  = self._path:GetWaypoints()
-	self._wpIndex    = 2  -- skip index 1 (current position)
-	self._lastPos    = self.RootPart.Position
+	self._waypoints   = self._path:GetWaypoints()
+	self._wpIndex     = 2
+	self._lastPos     = self.RootPart.Position
 	self._lastMovedAt = tick()
 
 	drawWaypoints(self.NpcId, self._waypoints)
 
-	-- Kick off movement to first real waypoint
 	local first = self._waypoints[self._wpIndex]
 	if first then
 		self.Humanoid:MoveTo(first.Position)
