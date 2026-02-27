@@ -1,9 +1,10 @@
 --[[
 	Scared.lua
 
-	Clean architecture: NO FSM:Transition calls anywhere in this file.
-	Scared only maintains its own internal state (frozen, tripped) and
-	answers questions that States.lua uses to decide transitions.
+	Hysteresis fix: ShouldForceFlee() uses two thresholds.
+	  Enter flee: player <= FleeRadius
+	  Exit flee:  player > FleeRadius + 10
+	Prevents Flee<->Idle oscillation when player is on the edge of the radius.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -16,14 +17,15 @@ local CFG = Config.Scared
 
 function Scared.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Scared)
-	self.Name         = "Scared"
-	self._frozen      = false
-	self._freezeTimer = 0
-	self._tripped     = false
-	self._tripTimer   = 0
-	self._updateTimer = 0
-	self._nearestPlayer = nil
-	self._nearestDist   = math.huge
+	self.Name             = "Scared"
+	self._frozen          = false
+	self._freezeTimer     = 0
+	self._tripped         = false
+	self._tripTimer       = 0
+	self._updateTimer     = 0
+	self._nearestPlayer   = nil
+	self._nearestDist     = math.huge
+	self._isThreatActive  = false  -- hysteresis flag
 	return self
 end
 
@@ -34,7 +36,16 @@ function Scared:CanEnterCombat(): boolean
 end
 
 function Scared:ShouldForceFlee(): boolean
-	return self._nearestPlayer ~= nil and self._nearestDist <= CFG.FleeRadius
+	if self._nearestPlayer then
+		if not self._isThreatActive and self._nearestDist <= CFG.FleeRadius then
+			self._isThreatActive = true
+		elseif self._isThreatActive and self._nearestDist > CFG.FleeRadius + 10 then
+			self._isThreatActive = false
+		end
+	else
+		self._isThreatActive = false
+	end
+	return self._isThreatActive
 end
 
 function Scared:GetFleeSpeed(): number?
@@ -43,8 +54,7 @@ function Scared:GetFleeSpeed(): number?
 	return CFG.PanicSpeed
 end
 
--- ── Internal update — manages freeze/trip state and panic movement ─────────
--- Does NOT call FSM:Transition. States.lua handles that.
+-- ── Internal update ────────────────────────────────────────────────────────
 
 function Scared:OnUpdate(dt: number)
 	local entity = self.Entity
@@ -64,23 +74,21 @@ function Scared:OnUpdate(dt: number)
 		end
 	end
 
-	-- Update speed based on current state
+	-- Apply speed
 	local speed = self:GetFleeSpeed()
 	if speed then
 		entity.Humanoid.WalkSpeed = speed
 	end
 
-	-- Throttled scan for nearest player
+	-- Throttled scan
 	self._updateTimer += dt
 	if self._updateTimer < 0.25 then return end
 	self._updateTimer = 0
 
 	self._nearestPlayer, self._nearestDist = self:_scanNearestPlayer()
 
-	-- If in flee range: apply panic behaviors
-	if self._nearestPlayer and self._nearestDist <= CFG.FleeRadius then
+	if self._isThreatActive and self._nearestPlayer then
 		if not self._frozen then
-			-- Random freeze
 			if math.random() < CFG.FreezeChance then
 				self._frozen      = true
 				self._freezeTimer = CFG.FreezeDuration
@@ -88,7 +96,6 @@ function Scared:OnUpdate(dt: number)
 				return
 			end
 
-			-- Random trip/slow
 			if not self._tripped and math.random() < CFG.SlowChance then
 				self._tripped   = true
 				self._tripTimer = CFG.SlowDuration
@@ -100,9 +107,9 @@ function Scared:OnUpdate(dt: number)
 end
 
 function Scared:OnDamaged(amount: number, attacker: Player?)
-	-- Getting hit = short freeze
-	self._frozen      = true
-	self._freezeTimer = 0.8
+	self._frozen         = true
+	self._freezeTimer    = 0.8
+	self._isThreatActive = true  -- getting hit always activates threat
 	self.Entity.Pathfinder:Stop()
 end
 
