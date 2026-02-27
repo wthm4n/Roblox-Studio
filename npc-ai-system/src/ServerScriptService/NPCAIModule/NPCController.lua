@@ -9,6 +9,10 @@
 	    personality fully controls whether a threat is registered.
 	  - Passive and Scared never call RegisterThreat, so their TargetSys
 	    stays blind unless the personality explicitly unignores someone.
+
+	Phase 6 additions:
+	  - Debug label now shows squad ID, leader crown (★), and formation slot.
+	  - _squadOffset field used by SquadBehavior for formation positioning.
 --]]
 
 local RunService = game:GetService("RunService")
@@ -29,7 +33,7 @@ local function makeStateLabel(npc: Model): BillboardGui?
 	local root = npc:FindFirstChild("HumanoidRootPart") :: BasePart
 	if not root then return nil end
 	local gui = Instance.new("BillboardGui")
-	gui.Size = UDim2.new(0, 180, 0, 40)
+	gui.Size = UDim2.new(0, 220, 0, 50)
 	gui.StudsOffset = Vector3.new(0, 4, 0)
 	gui.AlwaysOnTop = false
 	local label = Instance.new("TextLabel")
@@ -38,7 +42,8 @@ local function makeStateLabel(npc: Model): BillboardGui?
 	label.TextColor3 = Color3.new(1, 1, 1)
 	label.TextStrokeTransparency = 0
 	label.Font = Enum.Font.GothamBold
-	label.TextSize = 13
+	label.TextSize = 12
+	label.TextScaled = false
 	label.Text = "..."
 	label.Parent = gui
 	gui.Parent = root
@@ -59,6 +64,9 @@ function NPCController.new(npc: Model, patrolPoints: { BasePart | Vector3 }?)
 	self.TargetSys   = TargetSystem.new(npc)
 	self.Anim        = AnimationController.new(npc)
 	self.Personality = PersonalityManager.create(self)
+
+	-- Squad offset — written by SquadBehavior, read by SquadBehavior formation logic
+	self._squadOffset = Vector3.zero
 
 	self._patrolPoints = patrolPoints or {}
 	self._patrolIndex  = 1
@@ -129,14 +137,28 @@ function NPCController:_update(dt: number)
 	self.Personality:OnUpdate(dt)
 	self:_updateLocomotionAnim()
 
-	-- Debug label
+	-- ── Debug label ────────────────────────────────────────────────────────
 	if self._stateLabel then
 		local label = self._stateLabel:FindFirstChildOfClass("TextLabel")
 		if label then
-			local pName   = self.Personality.Name ~= "None" and (" [" .. self.Personality.Name .. "]") or ""
+			local pName   = self.Personality.Name ~= "None"
+				and (" [" .. self.Personality.Name .. "]") or ""
 			local role    = self.NPC:GetAttribute("TacticalRole")
 			local roleStr = role and (" · " .. role) or ""
-			label.Text = currentState .. pName .. roleStr
+
+			-- Squad info
+			local squadId   = self.NPC:GetAttribute("SquadId")
+			local isLeader  = self.NPC:GetAttribute("SquadLeader") == true
+			local slot      = self.NPC:GetAttribute("FormationSlot")
+			local squadStr  = ""
+			if squadId then
+				local short   = string.sub(squadId, -5)  -- last 5 chars of ID
+				local crown   = isLeader and "★ " or ""
+				local slotStr = slot and ("#" .. tostring(slot)) or ""
+				squadStr = (" | " .. crown .. short .. slotStr)
+			end
+
+			label.Text = currentState .. pName .. roleStr .. squadStr
 		end
 	end
 end
