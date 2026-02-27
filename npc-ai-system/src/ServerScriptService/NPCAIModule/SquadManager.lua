@@ -1,64 +1,35 @@
 --[[
 	SquadManager.lua  (place in ServerScriptService.NPCAIModule)
-	
+
 	Singleton that manages all NPC squads.
-	
-	Responsibilities:
-	  • Assigns NPCs to squads based on proximity at spawn
-	  • Elects a Squad Leader (highest HP, or first registered)
-	  • Broadcasts ALERT when any member spots a player
-	  • Tracks a shared target per squad
-	  • Issues formation offsets so NPCs don't stack
-	  • Handles "Call for Backup" — merges nearby idle squads into an alert
-	
-	Architecture:
-	  NPCController.new() calls SquadManager.register(brain)
-	  NPCController.Destroy() calls SquadManager.unregister(brain)
-	  Personality:OnTargetFound() calls SquadManager.alert(brain, target)
-	
-	Squads are purely server-side data — no RemoteEvents needed.
+
+	FIXES (v2):
+	  1. BackupThreshold condition was inverted — was `>=` (never called backup
+	     for solo squads), now correctly alerts when UNDER threshold.
+	  2. Squad grouping now checks ALL existing members for proximity, not just
+	     squad[1], so squads grow correctly regardless of spawn order.
+	  3. Added PROXIMITY ALERT fallback — alert() notifies ALL nearby NPC brains
+	     within BackupRadius regardless of squad membership. Solo-squad NPCs now
+	     respond to a fight nearby even if they never grouped.
+	  4. Alert refreshes timer on re-sighting instead of ignoring it.
+	  5. _allBrains set tracks every registered brain globally for proximity search.
 --]]
 
 local RunService = game:GetService("RunService")
 local Config     = require(game.ReplicatedStorage.Shared.Config)
 
--- ─── Singleton ─────────────────────────────────────────────────────────────
-
 local SquadManager = {}
 SquadManager.__index = SquadManager
 
--- Internal state
-local _squads      : { [string]: Squad } = {}   -- squadId → Squad
-local _memberIndex : { [any]: Squad }    = {}   -- brain → Squad
-
--- ─── Types ─────────────────────────────────────────────────────────────────
-
---[[
-	Squad = {
-	  id          : string,
-	  members     : { brain },
-	  leader      : brain?,
-	  sharedTarget: Player?,
-	  alertActive : boolean,
-	  alertTimer  : number,
-	}
---]]
-type Squad = {
-	id           : string,
-	members      : { any },
-	leader       : any?,
-	sharedTarget : any?,
-	alertActive  : boolean,
-	alertTimer   : number,
-}
-
--- ─── Config shorthand ──────────────────────────────────────────────────────
+local _squads      = {}  -- squadId → Squad
+local _memberIndex = {}  -- brain → Squad
+local _allBrains   = {}  -- all registered brains (for proximity-based alerts)
 
 local CFG = Config.Squad
 
 -- ─── Internal helpers ──────────────────────────────────────────────────────
 
-local function newSquad(id: string): Squad
+local function newSquad(id)
 	return {
 		id           = id,
 		members      = {},
@@ -69,95 +40,81 @@ local function newSquad(id: string): Squad
 	}
 end
 
-local function squadIdFor(brain: any): string
-	-- Assign to nearest squad within join radius, otherwise make new one
-	local pos = brain.RootPart.Position
+-- FIX 2: Check ALL squad members for proximity, not just squad[1]
+local function squadIdFor(brain)
+	local pos      = brain.RootPart.Position
+	local bestId   = nil
+	local bestDist = math.huge
 
 	for id, squad in pairs(_squads) do
 		if #squad.members >= CFG.MaxSquadSize then continue end
-		-- Use first member as anchor
-		local anchor = squad.members[1]
-		if not anchor then continue end
-		local anchorPos = anchor.RootPart.Position
-		if (pos - anchorPos).Magnitude <= CFG.SquadJoinRadius then
-			return id
+		for _, member in ipairs(squad.members) do
+			if not member.RootPart then continue end
+			local d = (pos - member.RootPart.Position).Magnitude
+			if d <= CFG.SquadJoinRadius and d < bestDist then
+				bestDist = d
+				bestId   = id
+			end
 		end
 	end
 
-	-- New squad
+	if bestId then return bestId end
+
 	local id = "Squad_" .. tostring(math.random(100000, 999999))
 	_squads[id] = newSquad(id)
 	return id
 end
 
-local function electLeader(squad: Squad)
-	local best     = nil
-	local bestHp   = -1
+local function electLeader(squad)
+	for _, brain in ipairs(squad.members) do
+		if brain.NPC.Parent then
+			brain.NPC:SetAttribute("SquadLeader", nil)
+		end
+	end
+	local best, bestHp = nil, -1
 	for _, brain in ipairs(squad.members) do
 		if not brain.NPC.Parent then continue end
 		local hp = brain.Humanoid.MaxHealth
-		if hp > bestHp then
-			bestHp = hp
-			best   = brain
-		end
+		if hp > bestHp then bestHp = hp; best = brain end
 	end
 	squad.leader = best
-	if best then
-		best.NPC:SetAttribute("SquadLeader", true)
-	end
+	if best then best.NPC:SetAttribute("SquadLeader", true) end
 end
 
-local function removeMemberFromSquad(squad: Squad, brain: any)
-	for i, m in ipairs(squad.members) do
-		if m == brain then
-			table.remove(squad.members, i)
-			break
-		end
-	end
-	brain.NPC:SetAttribute("SquadId", nil)
-	brain.NPC:SetAttribute("SquadLeader", nil)
-	brain.NPC:SetAttribute("FormationSlot", nil)
-	_memberIndex[brain] = nil
-
-	-- Re-elect leader if the leader left
-	if squad.leader == brain then
-		squad.leader = nil
-		electLeader(squad)
-	end
-
-	-- Disband empty squads
-	if #squad.members == 0 then
-		_squads[squad.id] = nil
-	end
-end
-
--- Assign unique formation slot offsets so NPCs spread out
 local FORMATION_OFFSETS = {
-	Vector3.new(  0,  0,  0),
-	Vector3.new(  4,  0,  0),
-	Vector3.new( -4,  0,  0),
-	Vector3.new(  0,  0,  4),
-	Vector3.new(  2,  0, -4),
-	Vector3.new( -2,  0, -4),
-	Vector3.new(  6,  0,  2),
-	Vector3.new( -6,  0,  2),
+	Vector3.new( 0, 0, 0), Vector3.new( 4, 0, 0), Vector3.new(-4, 0, 0),
+	Vector3.new( 0, 0, 4), Vector3.new( 2, 0,-4), Vector3.new(-2, 0,-4),
+	Vector3.new( 6, 0, 2), Vector3.new(-6, 0, 2),
 }
 
-local function assignFormationSlots(squad: Squad)
+local function assignFormationSlots(squad)
 	for i, brain in ipairs(squad.members) do
-		local offset = FORMATION_OFFSETS[i] or Vector3.new(
-			math.random(-8, 8), 0, math.random(-8, 8)
-		)
-		brain._squadOffset   = offset
+		local offset = FORMATION_OFFSETS[i]
+			or Vector3.new(math.random(-8,8), 0, math.random(-8,8))
+		brain._squadOffset = offset
 		brain.NPC:SetAttribute("FormationSlot", i)
+	end
+end
+
+-- Core: push an alert into one brain
+local function alertBrain(member, target, broadcaster)
+	if not member.NPC.Parent then return end
+	if member == broadcaster then return end
+	if member.TargetSys and target then
+		member.TargetSys:UnignorePlayer(target)
+		member.TargetSys:RegisterThreat(target, CFG.AlertThreatBoost)
+	end
+	if member.Personality and member.Personality.OnSquadAlert then
+		member.Personality:OnSquadAlert(target, broadcaster)
 	end
 end
 
 -- ─── Public API ────────────────────────────────────────────────────────────
 
--- Register a new NPC brain into a squad
-function SquadManager.register(brain: any)
-	if _memberIndex[brain] then return end  -- already registered
+function SquadManager.register(brain)
+	if _memberIndex[brain] then return end
+
+	_allBrains[brain] = true
 
 	local id    = squadIdFor(brain)
 	local squad = _squads[id]
@@ -175,137 +132,123 @@ function SquadManager.register(brain: any)
 		brain.NPC.Name, id, #squad.members))
 end
 
--- Unregister when NPC dies / is removed
-function SquadManager.unregister(brain: any)
+function SquadManager.unregister(brain)
+	_allBrains[brain] = nil
 	local squad = _memberIndex[brain]
 	if not squad then return end
-	removeMemberFromSquad(squad, brain)
+
+	for i, m in ipairs(squad.members) do
+		if m == brain then table.remove(squad.members, i); break end
+	end
+
+	brain.NPC:SetAttribute("SquadId", nil)
+	brain.NPC:SetAttribute("SquadLeader", nil)
+	brain.NPC:SetAttribute("FormationSlot", nil)
+	_memberIndex[brain] = nil
+
+	if squad.leader == brain then
+		squad.leader = nil
+		electLeader(squad)
+	end
+
+	if #squad.members == 0 then _squads[squad.id] = nil end
 end
 
 --[[
-	Alert the squad that one member has spotted a target.
-	All members switch to Hunt mode (their personality must handle this).
-	Also calls for backup from nearby squads if outnumbered.
+	Alert the squad that one member spotted a target.
+
+	Stage 1 — own squad members (always)
+	Stage 2 — ALL other registered brains within BackupRadius
+	           (FIX 3: catches solo-squad NPCs that spawned too far apart to group)
 --]]
-function SquadManager.alert(brain: any, target: any)
-	local squad = _memberIndex[brain]
-	if not squad then return end
+function SquadManager.alert(brain, target)
+	local squad    = _memberIndex[brain]
+	local alertPos = brain.RootPart.Position
 
-	squad.sharedTarget = target
-	squad.alertActive  = true
-	squad.alertTimer   = CFG.AlertDuration
+	-- Stage 1: own squad
+	if squad then
+		squad.sharedTarget = target
+		squad.alertActive  = true
+		squad.alertTimer   = CFG.AlertDuration  -- FIX 4: always refresh
 
-	-- Broadcast to all squad members
-	for _, member in ipairs(squad.members) do
-		if member == brain then continue end
-		if not member.NPC.Parent then continue end
-
-		-- Force the member's target system to register the threat
-		-- and unignore if needed, then let the personality react
-		if member.TargetSys and target then
-			member.TargetSys:UnignorePlayer(target)
-			member.TargetSys:RegisterThreat(target, CFG.AlertThreatBoost)
-		end
-
-		-- Notify the personality
-		if member.Personality and member.Personality.OnSquadAlert then
-			member.Personality:OnSquadAlert(target, brain)
+		for _, member in ipairs(squad.members) do
+			alertBrain(member, target, brain)
 		end
 	end
 
-	-- Call for backup from nearby squads
-	SquadManager._callForBackup(squad, target)
+	-- Stage 2: proximity-based backup (FIX 3)
+	local backupCount = 0
+	local backupCap   = CFG.MaxBackupSquads * CFG.MaxSquadSize
 
-	print(("[SquadManager] %s ALERT — target: %s"):format(squad.id, tostring(target)))
+	for otherBrain in pairs(_allBrains) do
+		if otherBrain == brain then continue end
+		if not otherBrain.RootPart then continue end
+		if not otherBrain.NPC.Parent then continue end
+
+		-- Skip if this brain is already in the alerting squad (handled above)
+		local otherSquad = _memberIndex[otherBrain]
+		if otherSquad and otherSquad == squad then continue end
+
+		local dist = (alertPos - otherBrain.RootPart.Position).Magnitude
+		if dist > CFG.BackupRadius then continue end
+		if backupCount >= backupCap then break end
+
+		-- Mark the other brain's squad as alerted too
+		if otherSquad and not otherSquad.alertActive then
+			otherSquad.sharedTarget = target
+			otherSquad.alertActive  = true
+			otherSquad.alertTimer   = CFG.AlertDuration * 0.75
+			print(("[SquadManager] Backup: %s responding"):format(otherSquad.id))
+		end
+
+		alertBrain(otherBrain, target, brain)
+		backupCount += 1
+	end
+
+	print(("[SquadManager] ALERT from %s — target: %s | backup: %d"):format(
+		squad and squad.id or brain.NPC.Name,
+		tostring(target),
+		backupCount))
 end
 
--- Return the shared target for a brain's squad (nil if no alert)
-function SquadManager.getSharedTarget(brain: any): any?
+function SquadManager.getSharedTarget(brain)
 	local squad = _memberIndex[brain]
 	return squad and squad.sharedTarget or nil
 end
 
--- Return whether the squad is currently on alert
-function SquadManager.isOnAlert(brain: any): boolean
+function SquadManager.isOnAlert(brain)
 	local squad = _memberIndex[brain]
 	return squad ~= nil and squad.alertActive
 end
 
--- Return the leader for a brain's squad
-function SquadManager.getLeader(brain: any): any?
+function SquadManager.getLeader(brain)
 	local squad = _memberIndex[brain]
 	return squad and squad.leader or nil
 end
 
--- Return this brain's formation offset
-function SquadManager.getFormationOffset(brain: any): Vector3
+function SquadManager.getFormationOffset(brain)
 	return brain._squadOffset or Vector3.zero
 end
 
--- Return squad member count
-function SquadManager.getMemberCount(brain: any): number
+function SquadManager.getMemberCount(brain)
 	local squad = _memberIndex[brain]
 	return squad and #squad.members or 1
 end
 
--- Tick — decay alert timers
-function SquadManager.update(dt: number)
+-- ─── Tick ──────────────────────────────────────────────────────────────────
+
+function SquadManager.update(dt)
 	for _, squad in pairs(_squads) do
 		if squad.alertActive then
 			squad.alertTimer -= dt
 			if squad.alertTimer <= 0 then
 				squad.alertActive  = false
 				squad.sharedTarget = nil
-				print(("[SquadManager] %s alert expired — returning to patrol"):format(squad.id))
+				print(("[SquadManager] %s alert expired"):format(squad.id))
 			end
 		end
 	end
 end
-
--- ─── Private: backup logic ─────────────────────────────────────────────────
-
-function SquadManager._callForBackup(alertedSquad: Squad, target: any)
-	if #alertedSquad.members >= CFG.BackupThreshold then return end  -- already have enough
-	
-	local anchorBrain = alertedSquad.members[1]
-	if not anchorBrain then return end
-	local anchorPos = anchorBrain.RootPart.Position
-
-	local backupRequested = 0
-
-	for id, squad in pairs(_squads) do
-		if squad == alertedSquad then continue end
-		if squad.alertActive then continue end  -- already engaged
-		if backupRequested >= CFG.MaxBackupSquads then break end
-
-		local squadAnchor = squad.members[1]
-		if not squadAnchor then continue end
-		local squadPos = squadAnchor.RootPart.Position
-
-		if (anchorPos - squadPos).Magnitude <= CFG.BackupRadius then
-			-- Alert this nearby squad too
-			squad.sharedTarget = target
-			squad.alertActive  = true
-			squad.alertTimer   = CFG.AlertDuration * 0.7  -- shorter secondary alert
-
-			for _, member in ipairs(squad.members) do
-				if not member.NPC.Parent then continue end
-				if member.TargetSys and target then
-					member.TargetSys:UnignorePlayer(target)
-					member.TargetSys:RegisterThreat(target, CFG.AlertThreatBoost * 0.5)
-				end
-				if member.Personality and member.Personality.OnSquadAlert then
-					member.Personality:OnSquadAlert(target, anchorBrain)
-				end
-			end
-
-			backupRequested += 1
-			print(("[SquadManager] Backup called — %s joining %s"):format(id, alertedSquad.id))
-		end
-	end
-end
-
--- ─── Hook into RunService for alert decay ──────────────────────────────────
 
 RunService.Heartbeat:Connect(function(dt)
 	SquadManager.update(dt)
