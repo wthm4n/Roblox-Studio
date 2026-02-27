@@ -7,9 +7,9 @@ local Config = {}
 
 -- ─── Detection ─────────────────────────────────────────────────────────────
 Config.Detection = {
-	SightRange        = 150,   -- restore to sane value — 9999 breaks personalities
+	SightRange        = 120,   -- restore to sane value — 9999 breaks personalities
 	SightAngle        = 180,
-	HearRange         = 80,
+	HearRange         = 50,
 	LoseTargetTime    = 8,
 	RaycastCooldown   = 0.05,
 }
@@ -111,14 +111,23 @@ Config.Tactical = {
 	  FormationSnapDist — re-path to slot only when this far from it (studs)
 --]]
 Config.Squad = {
-	SquadJoinRadius   = 40,
+	--[[
+		SquadJoinRadius: NPCs within this distance at spawn join the same squad.
+		Set high (80+) because Roblox maps often have NPCs 50-70 studs apart.
+		If all your NPCs are logging "1 members" in the console, this was too low.
+	--]]
+	SquadJoinRadius   = 80,   -- was 40, raised to handle typical map spacing
 	MaxSquadSize      = 6,
-	AlertDuration     = 5,
-	AlertThreatBoost  = 50,
-	AlertCooldown     = 1,
-	BackupRadius      = 80,
-	BackupThreshold   = 3,
-	MaxBackupSquads   = 2,
+	AlertDuration     = 25,   -- seconds NPCs stay in hunt mode after alert
+	AlertThreatBoost  = 80,   -- threat registered on alerted NPCs' TargetSys
+	AlertCooldown     = 3,    -- min seconds between re-alerts from same NPC
+	--[[
+		BackupRadius: proximity alert range — how far OTHER squads/solo NPCs
+		can be and still respond to a fight. This is the KEY number for
+		"NPC1 sees player → nearby NPCs come running". Set it generously.
+	--]]
+	BackupRadius      = 150,  -- was 80, raised so distant NPCs can respond
+	MaxBackupSquads   = 4,    -- max extra squads to pull in (was 2)
 	FormationSnapDist = 3,
 }
 
