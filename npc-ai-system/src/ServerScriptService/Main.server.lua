@@ -82,23 +82,39 @@ local function spawnNPC(templateName: string, spawnPart: BasePart)
 end
 
 function NPCSpawner.init()
-	for _, spawnPart in ipairs(SpawnFolder:GetChildren()) do
-		if not spawnPart:IsA("BasePart") then continue end
+    -- Spawn one of each personality type for testing
+    local testSpawns = {
+        { pos = Vector3.new(0,   0,  0),  personality = "Aggressive" },
+        { pos = Vector3.new(20,  0,  0),  personality = "Passive"    },
+        { pos = Vector3.new(-20, 0,  0),  personality = "Scared"     },
+        { pos = Vector3.new(0,   0,  20), personality = "Tactical"   },
+        { pos = Vector3.new(10,  0,  20), personality = "Tactical"   }, -- second tactical so they coordinate
+    }
 
-		local templateName = spawnPart:GetAttribute("NPCTemplate") or "EnemyNPC"
-		spawnNPC(templateName, spawnPart)
-	end
+    for _, data in ipairs(testSpawns) do
+        local template = NPCAssets:FindFirstChild("EnemyNPC")
+        if not template then continue end
 
-	-- Handle spawn points added at runtime
-	SpawnFolder.ChildAdded:Connect(function(child)
-		if child:IsA("BasePart") then
-			local templateName = child:GetAttribute("NPCTemplate") or "EnemyNPC"
-			task.wait(0.1)  -- let attributes initialize
-			spawnNPC(templateName, child)
-		end
-	end)
+        local npc = template:Clone() :: Model
+        npc.Name  = data.personality .. "_" .. tostring(math.random(1000, 9999))
+        npc:SetAttribute("NPCID", math.random(10000, 99999))
+        npc:SetAttribute("IsNPC", true)
+        npc:SetAttribute("Personality", data.personality)
 
-	print("[NPCSpawner] Initialized. Active NPCs:", #workspace:GetChildren())
+        local root = npc:FindFirstChild("HumanoidRootPart") :: BasePart
+        if root then root.CFrame = CFrame.new(data.pos + Vector3.new(0, 3, 0)) end
+
+        npc.Parent = workspace
+        local brain = NPCController.new(npc, {})
+        activeNPCs[npc] = brain
+
+        local hum = npc:FindFirstChildOfClass("Humanoid") :: Humanoid
+        hum.Died:Connect(function()
+            activeNPCs[npc] = nil
+        end)
+    end
+
+    print("[NPCSpawner] Spawned test NPCs with all personalities")
 end
 
 -- ─── Optional: expose damage helper for weapons ───────────────────────────
