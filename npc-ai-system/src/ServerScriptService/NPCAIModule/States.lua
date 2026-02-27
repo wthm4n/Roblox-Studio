@@ -251,19 +251,15 @@ local Flee = {
 	OnEnter = function(entity)
 		local speed = entity.Personality:GetFleeSpeed() or Config.Movement.FleeSpeed
 		setSpeed(entity, speed)
-		entity._fleeTimer = 0
-		entity:_beginFlee()
+		entity._fleeRecalcTimer = 0
 	end,
 
 	OnUpdate = function(entity, dt)
-		entity._fleeTimer += dt
-
-		-- Update speed each frame (Scared may change it due to freeze/trip)
 		local speed = entity.Personality:GetFleeSpeed() or Config.Movement.FleeSpeed
 		setSpeed(entity, speed)
 
-		-- Exit Flee only when BOTH conditions are clear
-		local hpOk         = not entity:_shouldFlee()
+		-- Exit condition
+		local hpOk          = not entity:_shouldFlee()
 		local personalityOk = not entity.Personality:ShouldForceFlee()
 
 		if hpOk and personalityOk then
@@ -271,18 +267,46 @@ local Flee = {
 			return
 		end
 
-		if entity._fleeTimer >= 3 then
-			entity._fleeTimer = 0
-			entity:_beginFlee()
+		entity._fleeRecalcTimer += dt
+		if entity._fleeRecalcTimer >= 0.5 then -- recalc faster (0.5 instead of 3)
+			entity._fleeRecalcTimer = 0
+
+			local threat = entity.TargetSys.CurrentTarget
+			if threat and threat.Character then
+				local root = threat.Character:FindFirstChild("HumanoidRootPart")
+				if root then
+					local npcPos = entity.RootPart.Position
+					local threatPos = root.Position
+
+					local awayDir = (npcPos - threatPos)
+					awayDir = Vector3.new(awayDir.X, 0, awayDir.Z)
+
+					if awayDir.Magnitude < 0.1 then
+						awayDir = Vector3.new(math.random()-0.5,0,math.random()-0.5)
+					end
+
+					awayDir = awayDir.Unit
+
+					-- Dynamic flee distance (stronger escape)
+					local fleeDistance = math.clamp(
+						(npcPos - threatPos).Magnitude * 1.5,
+						20,
+						80
+					)
+
+					local dest = npcPos + awayDir * fleeDistance
+
+					entity.Pathfinder:MoveTo(dest)
+				end
+			end
 		end
 	end,
 
 	OnExit = function(entity)
 		entity.Pathfinder:Stop()
-		entity._fleeTimer = 0
+		entity._fleeRecalcTimer = 0
 	end,
 }
-
 -- ─── Export ────────────────────────────────────────────────────────────────
 
 return {
