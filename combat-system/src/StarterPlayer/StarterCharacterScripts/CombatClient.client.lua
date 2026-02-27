@@ -33,6 +33,8 @@ local RE_HitConfirm     = RemotesFolder:WaitForChild(CombatSettings.Remotes.HitC
 local RE_StunApplied    = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunApplied)    :: RemoteEvent
 local RE_StunReleased   = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunReleased)   :: RemoteEvent
 local RE_TechRoll       = RemotesFolder:WaitForChild(CombatSettings.Remotes.TechRoll)       :: RemoteEvent
+local RE_Ragdoll        = RemotesFolder:WaitForChild(CombatSettings.Remotes.Ragdoll)        :: RemoteEvent
+local RE_RagdollEnd     = RemotesFolder:WaitForChild(CombatSettings.Remotes.RagdollEnd)     :: RemoteEvent
 
 -- ── Local state ───────────────────────────────────────────────────────────────
 local _lastM1Time = -math.huge
@@ -43,10 +45,10 @@ local _activeHighlights: { [Model]: Highlight } = {}
 
 -- ── Stun state (local player only) ────────────────────────────────────────────
 -- Whether THIS local client is currently stunned (for input blocking + UI).
-local _locallyStunned = false
-local _stunGui: ScreenGui? = nil   -- persistent stun indicator GUI
+local _locallyStunned  = false  -- is the local player currently stunned/ragdolled?
+local _locallyRagdolled = false -- is the local player currently ragdolled?
 
--- Tech roll cooldown mirror (client-side; server has authoritative check too)
+-- Tech roll cooldown mirror (server has authoritative check too)
 local _lastTechRoll   = -math.huge
 local TECH_ROLL_KEY   = Enum.KeyCode[CombatSettings.Stun.TechRoll.Key] or Enum.KeyCode.Q
 
@@ -184,100 +186,81 @@ local function _triggerCameraShake(comboIndex: number)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
---  STUN INDICATOR UI  (shown only to the local player when they're stunned)
--- ═══════════════════════════════════════════════════════════════════════════════
---  Simple "STUNNED — Press Q to tech roll" label in the centre of the screen.
---  Destroy it on release. Pure Roblox UI, no extra assets needed.
-
-local function _createStunGui(): ScreenGui
-	local gui        = Instance.new("ScreenGui")
-	gui.Name         = "StunIndicator"
-	gui.ResetOnSpawn = false
-	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-
-	local frame           = Instance.new("Frame", gui)
-	frame.Name            = "Container"
-	frame.Size            = UDim2.new(0, 300, 0, 60)
-	frame.Position        = UDim2.new(0.5, -150, 0.72, 0)
-	frame.BackgroundColor3 = Color3.fromRGB(200, 30, 30)
-	frame.BackgroundTransparency = 0.25
-	frame.BorderSizePixel = 0
-
-	local corner = Instance.new("UICorner", frame)
-	corner.CornerRadius = UDim.new(0, 8)
-
-	local label            = Instance.new("TextLabel", frame)
-	label.Name             = "Label"
-	label.Size             = UDim2.new(1, 0, 1, 0)
-	label.BackgroundTransparency = 1
-	label.TextColor3       = Color3.new(1, 1, 1)
-	label.TextScaled       = true
-	label.Font             = Enum.Font.GothamBold
-	label.Text             = ("STUNNED  —  Press %s to escape"):format(
-		CombatSettings.Stun.TechRoll.Key
-	)
-
-	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-	return gui
-end
-
-local function _showStunGui()
-	if _stunGui then _stunGui:Destroy() end
-	_stunGui = _createStunGui()
-end
-
-local function _hideStunGui()
-	if _stunGui then
-		_stunGui:Destroy()
-		_stunGui = nil
-	end
-end
-
--- ═══════════════════════════════════════════════════════════════════════════════
 --  STUN REMOTE HANDLERS
 -- ═══════════════════════════════════════════════════════════════════════════════
 
--- StunApplied: victim: Player, duration: number
-RE_StunApplied.OnClientEvent:Connect(function(victim: Player, duration: number)
-	-- Only show the indicator on our own screen
+-- StunApplied (victim: Player, duration: number)
+RE_StunApplied.OnClientEvent:Connect(function(victim: Player, _duration: number)
 	if victim ~= LocalPlayer then return end
-
 	_locallyStunned = true
-	_showStunGui()
-
-	-- Safety: hide the GUI after duration even if StunReleased somehow doesn't fire
-	task.delay(duration + 0.2, function()
-		if _locallyStunned then
-			_locallyStunned = false
-			_hideStunGui()
-		end
-	end)
+	-- No GUI — ragdoll physics is the visual
 end)
 
--- StunReleased: victim: Player, reason: string
-RE_StunReleased.OnClientEvent:Connect(function(victim: Player, reason: string)
+-- StunReleased (victim: Player, reason: string)
+RE_StunReleased.OnClientEvent:Connect(function(victim: Player, _reason: string)
 	if victim ~= LocalPlayer then return end
-
 	_locallyStunned = false
-	_hideStunGui()
+end)
 
-	-- If it was a tech roll, play the roll animation
-	if reason == "techroll" then
-		local char = LocalPlayer.Character
-		if char then
-			-- You can add a dedicated TechRoll animation ID to MovementSettings later.
-			-- For now we just hide the stun UI — the backward velocity is visual enough.
+-- ═══════════════════════════════════════════════════════════════════════════════
+--  RAGDOLL REMOTE HANDLERS
+--  Server tells ALL clients to disable / re-enable the victim's Animate script.
+--  Without this, Roblox's default animation controller fights the physics joints
+--  and the ragdoll looks stiff / snaps back to idle pose.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+local function _setAnimateEnabled(char: Model, enabled: boolean)
+	-- The "Animate" LocalScript lives directly under the character model
+	local animScript = char:FindFirstChild("Animate")
+	if animScript and animScript:IsA("LocalScript") then
+		animScript.Disabled = not enabled
+	end
+	-- Also stop all currently-playing animation tracks so they don't hold poses
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if animator and not enabled then
+		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+			track:Stop(0)
 		end
+	end
+end
+
+-- Ragdoll: victim: Player, active: boolean
+RE_Ragdoll.OnClientEvent:Connect(function(victim: Player, _active: boolean)
+	local char = victim.Character
+	if not char then return end
+
+	-- Disable Animate on ALL clients so nobody sees animation fighting the physics
+	_setAnimateEnabled(char, false)
+
+	-- Track ragdoll state for the local player (blocks input)
+	if victim == LocalPlayer then
+		_locallyRagdolled = true
+		_locallyStunned   = true
+	end
+end)
+
+-- RagdollEnd: victim: Player
+RE_RagdollEnd.OnClientEvent:Connect(function(victim: Player)
+	local char = victim.Character
+	if not char then return end
+
+	_setAnimateEnabled(char, true)
+
+	if victim == LocalPlayer then
+		_locallyRagdolled = false
+		_locallyStunned   = false
 	end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 --  INPUT → INTENT
+
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 local function _onM1Input()
 	-- Can't attack while stunned (server also gates, avoids the round trip)
-	if _locallyStunned then return end
+	if _locallyStunned or _locallyRagdolled then return end
 
 	local now = os.clock()
 	if now - _lastM1Time < CombatSettings.Cooldowns.M1 then return end
