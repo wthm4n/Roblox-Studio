@@ -83,6 +83,8 @@ function NPCController.new(npc: Model, patrolPoints: { BasePart | Vector3 }?)
 	self._connections = {}
 	self._prevTarget  = nil
 	self._prevState   = "Idle"
+	self._coneParts   = Config.Debug.Enabled and Config.Debug.ShowSightCone and self:_createConeParts() or nil
+	self._coneTimer   = 0
 
 	self:_setupDamageTracking()
 
@@ -107,6 +109,10 @@ function NPCController:Destroy()
 	self.Anim:Destroy()
 	self.Personality:Destroy()
 	if self._stateLabel then self._stateLabel:Destroy() end
+	if self._coneParts then
+		for _, p in ipairs(self._coneParts) do p:Destroy() end
+		self._coneParts = nil
+	end
 end
 
 function NPCController:_update(dt: number)
@@ -136,6 +142,7 @@ function NPCController:_update(dt: number)
 
 	self.Personality:OnUpdate(dt)
 	self:_updateLocomotionAnim()
+	self:_updateSightCone(dt)
 
 	-- ── Debug label ────────────────────────────────────────────────────────
 	if self._stateLabel then
@@ -280,6 +287,101 @@ function NPCController:_onDied()
 	self.Pathfinder:Stop()
 	self.Anim:OnDeath()
 	task.delay(5, function() self:Destroy() end)
+end
+
+-- ─── Sight Cone Debug ─────────────────────────────────────────────────────
+
+--[[
+	Draws the sight cone as a fan of thin wedge parts in the _NPCDebug folder.
+	Segments = 8 wedges covering the full FOV angle.
+	Color changes: grey = idle/no target, green = has target, red = in attack range.
+	Updates at 15fps (every 0.066s) to avoid per-frame part moves being expensive.
+--]]
+
+local CONE_SEGMENTS  = 8
+local CONE_UPDATE_HZ = 0.066  -- ~15fps for cone updates
+
+function NPCController:_createConeParts()
+	local folder = workspace:FindFirstChild("_NPCDebug")
+		or (function()
+			local f = Instance.new("Folder")
+			f.Name = "_NPCDebug"
+			f.Parent = workspace
+			return f
+		end)()
+
+	local sub = Instance.new("Folder")
+	sub.Name   = "Cone_" .. self.NPC.Name
+	sub.Parent = folder
+
+	local parts = {}
+	for i = 1, CONE_SEGMENTS do
+		local w = Instance.new("WedgePart")
+		w.Anchored    = true
+		w.CanCollide  = false
+		w.CastShadow  = false
+		w.Material    = Enum.Material.Neon
+		w.Transparency = 0.72
+		w.Size         = Vector3.new(0.1, 0.1, 0.1)
+		w.Parent       = sub
+		table.insert(parts, w)
+	end
+	self._coneFolder = sub
+	return parts
+end
+
+function NPCController:_updateSightCone(dt: number)
+	if not self._coneParts then return end
+
+	self._coneTimer += dt
+	if self._coneTimer < CONE_UPDATE_HZ then return end
+	self._coneTimer = 0
+
+	local root      = self.RootPart
+	local origin    = root.Position + Vector3.new(0, 0.5, 0)
+	local lookVec   = root.CFrame.LookVector
+	local range     = Config.Detection.SightRange
+	local halfAngle = math.rad(Config.Detection.SightAngle / 2)
+
+	-- Color: red if attacking, green if has target, grey otherwise
+	local state  = self.FSM:GetState()
+	local hasTarget = self.TargetSys.CurrentTarget ~= nil
+	local color
+	if state == "Attack" then
+		color = Config.Debug.SightConeColorAlert or Color3.fromRGB(255, 50, 50)
+	elseif hasTarget then
+		color = Config.Debug.SightConeColorTarget or Color3.fromRGB(80, 255, 80)
+	else
+		color = Config.Debug.SightConeColor or Color3.fromRGB(180, 180, 180)
+	end
+
+	local segAngle = (halfAngle * 2) / CONE_SEGMENTS
+
+	for i, part in ipairs(self._coneParts) do
+		-- Angle of the LEFT edge of this segment
+		local leftAngle  = -halfAngle + (i - 1) * segAngle
+		local rightAngle = leftAngle + segAngle
+		local midAngle   = (leftAngle + rightAngle) / 2
+
+		-- Direction of this segment (rotated around Y)
+		local cosM, sinM = math.cos(midAngle), math.sin(midAngle)
+		local dir = Vector3.new(
+			lookVec.X * cosM - lookVec.Z * sinM,
+			0,
+			lookVec.X * sinM + lookVec.Z * cosM
+		).Unit
+
+		-- Wedge: length = range, width = 2 * range * tan(segAngle/2)
+		local segWidth = 2 * range * math.tan(segAngle / 2)
+		part.Size  = Vector3.new(segWidth, 0.15, range)
+		part.Color = color
+
+		-- WedgePart tapers toward its local -Z (the pointed end is at -Z).
+		-- We want the tip at the NPC and the wide base at range distance.
+		-- So: place center at origin + dir*(range/2), face dir (base forward).
+		local midPos = origin + dir * (range / 2)
+		part.CFrame  = CFrame.lookAt(midPos, midPos + dir)
+	end
 end
 
 return NPCController
