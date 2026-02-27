@@ -6,12 +6,12 @@
 
 local RunService = game:GetService("RunService")
 
-local StateMachine          = require(game.ReplicatedStorage.Shared.StateMachine) -- ReplicatedStorage.Shared folder
-local Config                = require(game.ReplicatedStorage.Shared.Config)
-local PathfindingController = require(game.ServerScriptService.NPCAIModule.PathfindingController) -- Server folder
-local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem) -- Server folder
-local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController) --
-local States                = require(game.ServerScriptService.NPCAIModule.States) -- Server folder
+local StateMachine          = require(script.Parent.Parent.Shared.StateMachine)
+local Config                = require(script.Parent.Parent.Shared.Config)
+local PathfindingController = require(script.Parent.PathfindingController)
+local TargetSystem          = require(script.Parent.TargetSystem)
+local AnimationController   = require(script.Parent.AnimationController)
+local States                = require(script.Parent.States)
 
 local NPCController = {}
 NPCController.__index = NPCController
@@ -123,39 +123,24 @@ function NPCController:_update(dt: number)
 end
 
 function NPCController:_updateLocomotionAnim()
-	-- Animate script handles idle/walk/run/swim/climb automatically.
-	-- We just make sure WalkSpeed is set correctly per state (done in States.lua).
-	-- Nothing else needed here.
-end
-
-function NPCController:_updateLocomotionAnim_DISABLED()
 	local state = self.FSM:GetState()
-
-	-- Don't override action animations
-	if state == "Attack" then return end
+	if state == "Attack" then return end -- action anim takes over
 
 	local vel   = self.RootPart.AssemblyLinearVelocity
 	local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
 
-	-- Swimming detection: check if root is underwater
-	local inWater = workspace:FindPartOnRay(
-		Ray.new(self.RootPart.Position, Vector3.new(0, 1, 0)), self.NPC
-	) == nil and self.RootPart.Position.Y < 0  -- simple water check
+	-- Simple water check: below Y=0 and no ground above
+	local waterResult = workspace:Raycast(self.RootPart.Position, Vector3.new(0, 3, 0))
+	local inWater = (self.RootPart.Position.Y < 0) and (waterResult == nil)
 
-	if state == "Flee" or state == "Chase" then
-		if speed > 0.5 then
-			self.Anim:SetLocomotion(inWater and "Swim" or "Run")
-		else
-			self.Anim:SetLocomotion("Idle")
-		end
+	if inWater then
+		self.Anim:SetLocomotion("swim")
+	elseif state == "Chase" or state == "Flee" then
+		self.Anim:SetLocomotion(speed > 0.5 and "run" or "idle")
 	elseif state == "Patrol" then
-		if speed > 0.5 then
-			self.Anim:SetLocomotion(inWater and "Swim" or "Walk")
-		else
-			self.Anim:SetLocomotion("Idle")
-		end
-	elseif state == "Idle" then
-		self.Anim:SetLocomotion("Idle")
+		self.Anim:SetLocomotion(speed > 0.5 and "walk" or "idle")
+	else
+		self.Anim:SetLocomotion("idle")
 	end
 end
 
