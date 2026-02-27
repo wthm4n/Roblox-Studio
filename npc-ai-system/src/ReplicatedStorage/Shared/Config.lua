@@ -46,7 +46,7 @@ Config.Patrol = {
 Config.Debug = {
 	Enabled           = true,
 	ShowPath          = true,
-	ShowSightCone     = true,
+	ShowSightCone     = false,
 	ShowStateLabel    = true,
 	PathColor         = Color3.fromRGB(0, 200, 255),
 	WaypointColor     = Color3.fromRGB(255, 100, 0),
@@ -116,7 +116,7 @@ Config.Squad = {
 		Set high (80+) because Roblox maps often have NPCs 50-70 studs apart.
 		If all your NPCs are logging "1 members" in the console, this was too low.
 	--]]
-	SquadJoinRadius   = 200,   -- was 40, raised to handle typical map spacing
+	SquadJoinRadius   = 80,   -- was 40, raised to handle typical map spacing
 	MaxSquadSize      = 6,
 	AlertDuration     = 25,   -- seconds NPCs stay in hunt mode after alert
 	AlertThreatBoost  = 80,   -- threat registered on alerted NPCs' TargetSys
