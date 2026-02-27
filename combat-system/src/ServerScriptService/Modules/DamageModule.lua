@@ -14,16 +14,13 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 -- ── Lazy deps (set via DamageModule.init) ────────────────────────────────────
-local _remotes: { [string]: RemoteEvent } = {}
+local _remotes:  { [string]: RemoteEvent } = {}
+local _stunModule = nil   -- injected via DamageModule.init
+local _stunDurations: { [number]: number } = {}
 
 -- ── Constructor ───────────────────────────────────────────────────────────────
---[[
-	DamageModule.new(attacker)
-	Creates a scoped damage applier tied to the attacking player.
-]]
 function DamageModule.new(attacker: Player)
 	assert(RunService:IsServer(), "DamageModule must only run on the server!")
-
 	local self = setmetatable({}, DamageModule)
 	self._attacker = attacker
 	return self
@@ -31,12 +28,15 @@ end
 
 -- ── Module-level init (call once from CombatService) ─────────────────────────
 --[[
-	DamageModule.init(remoteTable)
-	remoteTable: { ApplyHitEffect: RemoteEvent, HitConfirm: RemoteEvent }
-	Provides the remotes needed for visual/audio feedback.
+	DamageModule.init(remoteTable, stunModule, stunDurations)
+	  remoteTable   : { ApplyHitEffect, HitConfirm }
+	  stunModule    : StunModule (the require'd module table)
+	  stunDurations : CombatSettings.Stun.Duration table
 ]]
-function DamageModule.init(remoteTable: { [string]: RemoteEvent })
-	_remotes = remoteTable
+function DamageModule.init(remoteTable, stunModule, stunDurations)
+	_remotes       = remoteTable
+	_stunModule    = stunModule
+	_stunDurations = stunDurations or {}
 end
 
 -- ── Private ───────────────────────────────────────────────────────────────────
@@ -52,15 +52,11 @@ end
 
 --[[
 	:Apply(victim, amount, comboIndex)
-		victim     : Player — receiving the hit
-		amount     : number — raw damage
-		comboIndex : number — which hit in the chain
-
-	Returns true if damage was applied, false if victim was already dead / invalid.
-
-	On success fires:
-	  • ApplyHitEffect → ALL clients  (hit-reaction animation on victim)
-	  • HitConfirm     → ALL clients  (red highlight on victim + hit sound + cam shake on attacker)
+	On success:
+	  • TakeDamage on victim's Humanoid
+	  • Applies / refreshes stun (WalkSpeed=0, JumpPower=0) for combo duration
+	  • Fires ApplyHitEffect → ALL clients  (hit-reaction animation)
+	  • Fires HitConfirm     → ALL clients  (highlight + sound + cam shake)
 ]]
 function DamageModule:Apply(victim: Player, amount: number, comboIndex: number): boolean
 	local attacker = self._attacker
@@ -72,19 +68,23 @@ function DamageModule:Apply(victim: Player, amount: number, comboIndex: number):
 	local humanoid: Humanoid? = victimChar:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then return false end
 
-	-- ── Apply damage ─────────────────────────────────────────────────────────
+	-- ── Damage ───────────────────────────────────────────────────────────────
 	humanoid:TakeDamage(amount)
 
-	-- ── Hit-reaction animation (everyone sees this) ──────────────────────────
+	-- ── Stun — apply / refresh ────────────────────────────────────────────────
+	-- Duration is keyed by comboIndex; fall back to index 1 if out of range.
+	if _stunModule then
+		local duration = _stunDurations[comboIndex] or _stunDurations[1] or 0.55
+		_stunModule.Apply(victim, duration)
+	end
+
+	-- ── Hit-reaction animation ────────────────────────────────────────────────
 	local reactionAnim = _pickRandom(HIT_REACTIONS)
 	if _remotes.ApplyHitEffect then
 		_remotes.ApplyHitEffect:FireAllClients(victim, reactionAnim, comboIndex)
 	end
 
-	-- ── HitConfirm: highlight + hit sound + camera shake ────────────────────
-	-- Payload: attacker (for cam shake / hit sound on their client),
-	--          victim   (for highlight on all clients),
-	--          comboIndex (to pick the right sound / shake profile)
+	-- ── HitConfirm: highlight + hit sound + camera shake ─────────────────────
 	if _remotes.HitConfirm then
 		_remotes.HitConfirm:FireAllClients(attacker, victim, comboIndex)
 	end
@@ -94,11 +94,10 @@ end
 
 --[[
 	:ApplyBlocked(victim, amount)
-	Reduced damage when the victim is blocking; plays a block-reaction animation.
-	Does NOT fire HitConfirm (no camera shake / hit sound for blocked hits).
+	Chip damage on block. No stun — blocking player keeps mobility.
 ]]
 function DamageModule:ApplyBlocked(victim: Player, amount: number): boolean
-	local blockDamage = math.floor(amount * 0.15)  -- 15% chip damage on block
+	local blockDamage = math.floor(amount * 0.15)
 	local victimChar  = victim.Character
 	if not victimChar then return false end
 
@@ -111,8 +110,6 @@ function DamageModule:ApplyBlocked(victim: Player, amount: number): boolean
 	if _remotes.ApplyHitEffect then
 		_remotes.ApplyHitEffect:FireAllClients(victim, reactionAnim, 0)
 	end
-
-	-- Optionally fire a softer BlockHit confirm here in Phase 2
 
 	return true
 end
