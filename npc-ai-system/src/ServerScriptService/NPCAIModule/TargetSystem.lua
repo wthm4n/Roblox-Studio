@@ -1,15 +1,16 @@
 --[[
 	TargetSystem.lua
-	Handles:
-	  - Nearest-player detection within sight range/cone
-	  - Threat tracking (who attacked me?)
-	  - Line-of-sight raycasting
-	  - Safe-zone & dead player filtering
-	  - Personality-driven ignore list
-	  - Returns the highest-priority target each tick
 
-	ADDED: ClearThreat() — wipes the entire threat table.
-	Used by Passive when flee timer expires so the attacker is fully forgotten.
+	DETECTION FIXES:
+	  1. Multi-point LoS — fires rays at 3 heights on the player (ankles, torso,
+	     head). Detected if ANY one ray clears. Previously a single ray to root
+	     was blocked by props, terrain bumps, or the player's own base geometry.
+	  2. FOV check uses flattened (Y=0) direction vectors so vertical height
+	     difference between NPC and player doesn't shrink the effective cone.
+	  3. Ray origin raised to +2.8 (eye level) and also tries +1.0 (chest)
+	     as fallback, preventing the NPC's own collider from blocking its vision.
+	  4. RaycastParams now also excludes all player characters so player
+	     parts don't accidentally block the ray to that same player.
 --]]
 
 local Players = game:GetService("Players")
@@ -17,6 +18,11 @@ local Config  = require(game.ReplicatedStorage.Shared.Config)
 
 local TargetSystem = {}
 TargetSystem.__index = TargetSystem
+
+-- Heights to sample on the TARGET (player) for LoS checks
+local TARGET_SAMPLE_HEIGHTS = { 0.3, 2.0, 4.8 }  -- ankles, torso, head (studs above root.Y)
+-- Heights to cast FROM on the NPC
+local ORIGIN_HEIGHTS = { 2.8, 1.0 }               -- eye level, chest
 
 function TargetSystem.new(npc: Model)
 	local self = setmetatable({}, TargetSystem)
@@ -33,9 +39,14 @@ function TargetSystem.new(npc: Model)
 	self.LastKnownPos   = nil :: Vector3?
 	self.TimeSinceSeen  = 0
 
+	-- FIX 3+4: exclude NPC itself AND all player characters from raycasts
 	self._rayParams = RaycastParams.new()
 	self._rayParams.FilterType = Enum.RaycastFilterType.Exclude
-	self._rayParams.FilterDescendantsInstances = { npc }
+	self:_rebuildRayFilter()
+
+	-- Keep filter up to date as players join/leave
+	Players.PlayerAdded:Connect(function() self:_rebuildRayFilter() end)
+	Players.PlayerRemoving:Connect(function() self:_rebuildRayFilter() end)
 
 	return self
 end
@@ -47,7 +58,6 @@ function TargetSystem:RegisterThreat(player: Player, amount: number)
 	self._threatTable[player] = (self._threatTable[player] or 0) + amount
 end
 
--- Wipe the entire threat table (used by Passive after flee timer expires)
 function TargetSystem:ClearThreat()
 	self._threatTable = {}
 end
@@ -102,11 +112,29 @@ function TargetSystem:Update(dt: number): (Player?, Vector3?)
 	return self.CurrentTarget, self.LastKnownPos
 end
 
+--[[
+	HasLineOfSight — FIX 1+3: multi-origin, multi-target-height raycast.
+	Tries each combination of origin height and target height.
+	Returns true as soon as ANY ray clears — much more reliable than a
+	single root-to-root ray that any small prop can block.
+--]]
 function TargetSystem:HasLineOfSight(targetPos: Vector3): boolean
-	local origin    = self.RootPart.Position + Vector3.new(0, 1.5, 0)
-	local direction = targetPos - origin
-	local result    = workspace:Raycast(origin, direction, self._rayParams)
-	return result == nil
+	local npcBase = self.RootPart.Position
+
+	for _, originY in ipairs(ORIGIN_HEIGHTS) do
+		local origin = Vector3.new(npcBase.X, npcBase.Y + originY, npcBase.Z)
+
+		for _, targetOffsetY in ipairs(TARGET_SAMPLE_HEIGHTS) do
+			local samplePos = Vector3.new(targetPos.X, targetPos.Y + targetOffsetY, targetPos.Z)
+			local direction = samplePos - origin
+			local result    = workspace:Raycast(origin, direction, self._rayParams)
+			if result == nil then
+				return true  -- at least one ray got through
+			end
+		end
+	end
+
+	return false
 end
 
 -- ─── Private ───────────────────────────────────────────────────────────────
@@ -148,21 +176,38 @@ function TargetSystem:_selectBestTarget(): Player?
 end
 
 function TargetSystem:_isValidTarget(player: Player): boolean
-	if self._ignoredPlayers[player] then return false end  -- ignore list check FIRST
+	if self._ignoredPlayers[player] then return false end
 	if not player.Character then return false end
-
 	local hum = player.Character:FindFirstChildOfClass("Humanoid") :: Humanoid
 	if not hum or hum.Health <= 0 then return false end
-
 	if player.Character:GetAttribute("InSafeZone") then return false end
-
 	return true
 end
 
+--[[
+	_inFOV — FIX 2: flatten both vectors to Y=0 before computing the dot
+	product. Without this, a player standing on a hill or platform above/below
+	the NPC has their angle artificially inflated by the vertical component,
+	making them appear "outside" the cone even when directly ahead horizontally.
+--]]
 function TargetSystem:_inFOV(targetPos: Vector3): boolean
-	local toTarget  = (targetPos - self.RootPart.Position).Unit
-	local lookVec   = self.RootPart.CFrame.LookVector
-	local dot       = lookVec:Dot(toTarget)
+	local npcPos   = self.RootPart.Position
+
+	-- Flatten to horizontal plane
+	local toTarget = Vector3.new(
+		targetPos.X - npcPos.X,
+		0,
+		targetPos.Z - npcPos.Z
+	)
+	if toTarget.Magnitude < 0.01 then return true end  -- player is right on top of NPC
+	toTarget = toTarget.Unit
+
+	local lookVec = self.RootPart.CFrame.LookVector
+	local flatLook = Vector3.new(lookVec.X, 0, lookVec.Z)
+	if flatLook.Magnitude < 0.01 then return true end
+	flatLook = flatLook.Unit
+
+	local dot       = flatLook:Dot(toTarget)
 	local halfAngle = math.rad(Config.Detection.SightAngle / 2)
 	return dot >= math.cos(halfAngle)
 end
@@ -187,6 +232,17 @@ function TargetSystem:_decayThreats(dt: number)
 			self._threatTable[player] = newThreat
 		end
 	end
+end
+
+-- Rebuild the raycast exclusion list: NPC model + all current player characters
+function TargetSystem:_rebuildRayFilter()
+	local exclude = { self.NPC }
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(exclude, player.Character)
+		end
+	end
+	self._rayParams.FilterDescendantsInstances = exclude
 end
 
 function TargetSystem:Destroy()
