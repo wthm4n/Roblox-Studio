@@ -19,7 +19,7 @@ AnimationController.__index = AnimationController
 -- R6 action animation IDs
 -- These play ON TOP of whatever Animate is doing (higher priority)
 local ACTION_IDS = {
-	Attack = "rbxassetid://129631502",  -- default punch/tool slash
+	Attack = "rbxassetid://115362763052284",  -- default punch/tool slash
 	Hurt   = "rbxassetid://180435397",  -- default hit react
 }
 
