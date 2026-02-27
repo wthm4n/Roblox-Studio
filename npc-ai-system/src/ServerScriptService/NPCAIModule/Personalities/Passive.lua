@@ -1,9 +1,10 @@
 --[[
 	Passive.lua
 
-	Clean architecture: NO FSM:Transition calls anywhere in this file.
-	Passive only manages hiding/alerting logic and answers questions
-	that States.lua uses to decide transitions.
+	Hysteresis fix: ShouldForceFlee() uses two thresholds.
+	  Enter flee: player <= FleeRadius
+	  Exit flee:  player > FleeRadius + 10
+	Prevents Flee<->Idle oscillation when player is on the edge of the radius.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -16,13 +17,14 @@ local CFG = Config.Passive
 
 function Passive.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Passive)
-	self.Name         = "Passive"
-	self._hiding      = false
-	self._hideTimer   = 0
-	self._alerted     = false
-	self._updateTimer = 0
-	self._nearestPlayer = nil
-	self._nearestDist   = math.huge
+	self.Name            = "Passive"
+	self._hiding         = false
+	self._hideTimer      = 0
+	self._alerted        = false
+	self._updateTimer    = 0
+	self._nearestPlayer  = nil
+	self._nearestDist    = math.huge
+	self._isThreatActive = false  -- hysteresis flag
 	return self
 end
 
@@ -33,15 +35,23 @@ function Passive:CanEnterCombat(): boolean
 end
 
 function Passive:ShouldForceFlee(): boolean
-	return self._nearestPlayer ~= nil and self._nearestDist <= CFG.FleeRadius
+	if self._nearestPlayer then
+		if not self._isThreatActive and self._nearestDist <= CFG.FleeRadius then
+			self._isThreatActive = true
+		elseif self._isThreatActive and self._nearestDist > CFG.FleeRadius + 10 then
+			self._isThreatActive = false
+		end
+	else
+		self._isThreatActive = false
+	end
+	return self._isThreatActive
 end
 
 function Passive:GetFleeSpeed(): number?
 	return CFG.FleeSpeed
 end
 
--- ── Internal update — manages hide/alert logic ────────────────────────────
--- Does NOT call FSM:Transition. States.lua handles that.
+-- ── Internal update ────────────────────────────────────────────────────────
 
 function Passive:OnUpdate(dt: number)
 	self._updateTimer += dt
@@ -60,17 +70,14 @@ function Passive:OnUpdate(dt: number)
 		return
 	end
 
-	-- Scan for nearest player
 	self._nearestPlayer, self._nearestDist = self:_scanNearestPlayer()
 
-	if self._nearestPlayer and self._nearestDist <= CFG.FleeRadius then
-		-- Alert nearby passive allies
+	if self._isThreatActive and self._nearestPlayer then
 		if not self._alerted then
 			self._alerted = true
 			self:_alertAllies(entity.RootPart.Position, self._nearestPlayer)
 		end
 
-		-- Try to hide behind cover, otherwise flee movement is handled by States
 		if not self._hiding then
 			local coverPos = self:_findCover(entity.RootPart.Position, self._nearestPlayer)
 			if coverPos then
@@ -89,9 +96,9 @@ function Passive:OnUpdate(dt: number)
 end
 
 function Passive:OnDamaged(amount: number, attacker: Player?)
-	-- Record attacker as nearest threat so ShouldForceFlee triggers
 	if attacker then
-		self._nearestPlayer = attacker
+		self._nearestPlayer  = attacker
+		self._isThreatActive = true  -- getting hit always activates threat
 		local pRoot = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart") :: BasePart
 		self._nearestDist = pRoot and (self.Entity.RootPart.Position - pRoot.Position).Magnitude or 0
 	end
