@@ -6,10 +6,19 @@
 	  1. Place this script in ServerScriptService
 	  2. Create a folder called "NPCSpawnPoints" in Workspace
 	     Each SpawnPoint should be a BasePart with optional attributes:
-	       - PatrolFolder: string  — name of a Folder in Workspace containing patrol BaseParts
-	       - RespawnDelay: number  — override respawn time (default 10s)
+	       - NPCTemplate  : string  — model name in ReplicatedStorage.NPCAssets
+	       - Personality  : string  — "Passive" | "Scared" | "Aggressive" | "Tactical"
+	       - EnableSquad  : bool    — wrap with squad coordination (default false)
+	       - PatrolFolder : string  — name of a Folder in Workspace with patrol BaseParts
+	       - RespawnDelay : number  — override respawn time (default 10s)
 	  3. Put your NPC model in ReplicatedStorage.NPCAssets
 	     The model needs: Humanoid, HumanoidRootPart, (optional) AttackAnim
+
+	Squad notes:
+	  NPCs at spawn points within Config.Squad.SquadJoinRadius of each other
+	  will automatically be grouped into the same squad. The first NPC spawned
+	  in a group becomes squad leader (shown in debug label as ★).
+	  Set EnableSquad = true on spawn points to activate coordination.
 --]]
 
 local Players              = game:GetService("Players")
@@ -17,8 +26,8 @@ local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 local ServerScriptService  = game:GetService("ServerScriptService")
 
 -- Adjust these paths to match your project layout
-local NPCController = require(game.ServerScriptService.NPCAIModule.NPCController) -- Server folder
-local Config        = require(game.ReplicatedStorage.Shared.Config) -- ReplicatedStorage.Shared folder
+local NPCController = require(game.ServerScriptService.NPCAIModule.NPCController)
+local Config        = require(game.ReplicatedStorage.Shared.Config)
 
 local NPCAssets     = ReplicatedStorage:WaitForChild("NPCAssets")
 local SpawnFolder   = workspace:WaitForChild("NPCSpawnPoints")
@@ -59,6 +68,13 @@ local function spawnNPC(templateName: string, spawnPart: BasePart)
 	if personality then
 		npc:SetAttribute("Personality", personality)
 		print("[NPCSpawner] Personality set:", personality)
+	end
+
+	-- Stamp squad flag if enabled on spawn point
+	local enableSquad = spawnPart:GetAttribute("EnableSquad")
+	if enableSquad == true then
+		npc:SetAttribute("EnableSquad", true)
+		print("[NPCSpawner] Squad enabled for:", npc.Name)
 	end
 
 	-- Position at spawn point
