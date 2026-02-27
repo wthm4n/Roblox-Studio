@@ -30,6 +30,9 @@ local RemotesFolder     = ReplicatedStorage:WaitForChild("Remotes")
 local RE_UsedM1         = RemotesFolder:WaitForChild(CombatSettings.Remotes.UsedM1)        :: RemoteEvent
 local RE_ApplyHitEffect = RemotesFolder:WaitForChild(CombatSettings.Remotes.ApplyHitEffect) :: RemoteEvent
 local RE_HitConfirm     = RemotesFolder:WaitForChild(CombatSettings.Remotes.HitConfirm)     :: RemoteEvent
+local RE_StunApplied    = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunApplied)    :: RemoteEvent
+local RE_StunReleased   = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunReleased)   :: RemoteEvent
+local RE_TechRoll       = RemotesFolder:WaitForChild(CombatSettings.Remotes.TechRoll)       :: RemoteEvent
 
 -- ── Local state ───────────────────────────────────────────────────────────────
 local _lastM1Time = -math.huge
@@ -37,6 +40,15 @@ local ANIM_CACHE: { [string]: { [string]: AnimationTrack } } = {}
 
 -- Track active highlight per character so we don't stack them
 local _activeHighlights: { [Model]: Highlight } = {}
+
+-- ── Stun state (local player only) ────────────────────────────────────────────
+-- Whether THIS local client is currently stunned (for input blocking + UI).
+local _locallyStunned = false
+local _stunGui: ScreenGui? = nil   -- persistent stun indicator GUI
+
+-- Tech roll cooldown mirror (client-side; server has authoritative check too)
+local _lastTechRoll   = -math.huge
+local TECH_ROLL_KEY   = Enum.KeyCode[CombatSettings.Stun.TechRoll.Key] or Enum.KeyCode.Q
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 --  ANIMATION HELPERS
@@ -172,26 +184,113 @@ local function _triggerCameraShake(comboIndex: number)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════════
---  INPUT → INTENT
+--  STUN INDICATOR UI  (shown only to the local player when they're stunned)
+-- ═══════════════════════════════════════════════════════════════════════════════
+--  Simple "STUNNED — Press Q to tech roll" label in the centre of the screen.
+--  Destroy it on release. Pure Roblox UI, no extra assets needed.
+
+local function _createStunGui(): ScreenGui
+	local gui        = Instance.new("ScreenGui")
+	gui.Name         = "StunIndicator"
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+	local frame           = Instance.new("Frame", gui)
+	frame.Name            = "Container"
+	frame.Size            = UDim2.new(0, 300, 0, 60)
+	frame.Position        = UDim2.new(0.5, -150, 0.72, 0)
+	frame.BackgroundColor3 = Color3.fromRGB(200, 30, 30)
+	frame.BackgroundTransparency = 0.25
+	frame.BorderSizePixel = 0
+
+	local corner = Instance.new("UICorner", frame)
+	corner.CornerRadius = UDim.new(0, 8)
+
+	local label            = Instance.new("TextLabel", frame)
+	label.Name             = "Label"
+	label.Size             = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.TextColor3       = Color3.new(1, 1, 1)
+	label.TextScaled       = true
+	label.Font             = Enum.Font.GothamBold
+	label.Text             = ("STUNNED  —  Press %s to escape"):format(
+		CombatSettings.Stun.TechRoll.Key
+	)
+
+	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+	return gui
+end
+
+local function _showStunGui()
+	if _stunGui then _stunGui:Destroy() end
+	_stunGui = _createStunGui()
+end
+
+local function _hideStunGui()
+	if _stunGui then
+		_stunGui:Destroy()
+		_stunGui = nil
+	end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+--  STUN REMOTE HANDLERS
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-local function _onM1Input()
-	local now = os.clock()
-	if now - _lastM1Time < CombatSettings.Cooldowns.M1 then return end
-	_lastM1Time = now
+-- StunApplied: victim: Player, duration: number
+RE_StunApplied.OnClientEvent:Connect(function(victim: Player, duration: number)
+	-- Only show the indicator on our own screen
+	if victim ~= LocalPlayer then return end
 
-	local char = LocalPlayer.Character
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return end
+	_locallyStunned = true
+	_showStunGui()
 
-	RE_UsedM1:FireServer()
-end
+	-- Safety: hide the GUI after duration even if StunReleased somehow doesn't fire
+	task.delay(duration + 0.2, function()
+		if _locallyStunned then
+			_locallyStunned = false
+			_hideStunGui()
+		end
+	end)
+end)
+
+-- StunReleased: victim: Player, reason: string
+RE_StunReleased.OnClientEvent:Connect(function(victim: Player, reason: string)
+	if victim ~= LocalPlayer then return end
+
+	_locallyStunned = false
+	_hideStunGui()
+
+	-- If it was a tech roll, play the roll animation
+	if reason == "techroll" then
+		local char = LocalPlayer.Character
+		if char then
+			-- You can add a dedicated TechRoll animation ID to MovementSettings later.
+			-- For now we just hide the stun UI — the backward velocity is visual enough.
+		end
+	end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+--  TECH ROLL INPUT  (victim presses Q while stunned)
+-- ═══════════════════════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
 	if gameProcessed then return end
+
+	-- M1 attack
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		_onM1Input()
+	end
+
+	-- Tech roll escape (Q while stunned)
+	if input.KeyCode == TECH_ROLL_KEY and _locallyStunned then
+		local now = os.clock()
+		local cd  = CombatSettings.Stun.TechRoll.Cooldown
+		if now - _lastTechRoll >= cd then
+			_lastTechRoll = now
+			RE_TechRoll:FireServer()
+		end
 	end
 end)
 
