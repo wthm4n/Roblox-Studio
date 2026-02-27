@@ -8,9 +8,9 @@ local Config = {}
 
 -- ─── Detection ─────────────────────────────────────────────────────────────
 Config.Detection = {
-	SightRange        = 500,   -- studs; max distance NPC can "see"
+	SightRange        = 120,   -- studs; max distance NPC can "see"
 	SightAngle        = 180,   -- degrees total FOV (180 = full front hemisphere)
-	HearRange         = 500,    -- studs; sound-based detection (no LoS needed)
+	HearRange         = 50,    -- studs; sound-based detection (no LoS needed)
 	LoseTargetTime    = 8,     -- seconds before NPC gives up on last known pos
 	RaycastCooldown   = 0.05,  -- seconds between LoS raycasts (faster checks)
 }
@@ -22,9 +22,9 @@ Config.Movement = {
 	FleeSpeed         = 26,
 	JumpPower         = 50,
 	PathRecalcDelay   = 0.2,   -- recalc path twice as often for tighter tracking
-	StuckTimeout      = 1.5,   -- detect stuck faster
-	StuckThreshold    = 1.5,   -- studs moved; below this = possibly stuck
-	WaypointReachDist = 3,     -- studs; close enough to advance to next waypoint
+	StuckTimeout      = 1.2,   -- catch stuck faster   -- detect stuck faster
+	StuckThreshold    = 0.8,   -- lower = more sensitive to not moving   -- studs moved; below this = possibly stuck
+	WaypointReachDist = 1.5,   -- tighter = better cornering around walls     -- studs; close enough to advance to next waypoint
 }
 
 -- ─── Combat ────────────────────────────────────────────────────────────────
