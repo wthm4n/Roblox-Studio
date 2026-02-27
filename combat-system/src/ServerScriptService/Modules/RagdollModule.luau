@@ -24,17 +24,17 @@ local RagdollModule = {}
 RagdollModule.__index = RagdollModule
 
 -- ── Services ──────────────────────────────────────────────────────────────────
-local Players    = game:GetService("Players")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 -- ── Module state ──────────────────────────────────────────────────────────────
-local _remotes:  { [string]: RemoteEvent } = {}
-local _stunModule = nil   -- injected; used to keep stun active during ragdoll
+local _remotes: { [string]: RemoteEvent } = {}
+local _stunModule = nil -- injected; used to keep stun active during ragdoll
 
 -- Per-player ragdoll state
 type RagdollState = {
-	IsRagdolled  : boolean,
-	RecoverTimer : thread?,
+	IsRagdolled: boolean,
+	RecoverTimer: thread?,
 }
 local _states: { [Player]: RagdollState } = {}
 
@@ -46,7 +46,7 @@ local _states: { [Player]: RagdollState } = {}
 ]]
 function RagdollModule.init(remotes, stunModule)
 	assert(RunService:IsServer(), "RagdollModule.init must run on server!")
-	_remotes    = remotes
+	_remotes = remotes
 	_stunModule = stunModule
 
 	Players.PlayerAdded:Connect(function(p)
@@ -54,7 +54,9 @@ function RagdollModule.init(remotes, stunModule)
 	end)
 	Players.PlayerRemoving:Connect(function(p)
 		local s = _states[p]
-		if s and s.RecoverTimer then task.cancel(s.RecoverTimer) end
+		if s and s.RecoverTimer then
+			task.cancel(s.RecoverTimer)
+		end
 		_states[p] = nil
 	end)
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -80,27 +82,29 @@ end
 local function _createBallSocket(motor: Motor6D): BallSocketConstraint?
 	local p0 = motor.Part0
 	local p1 = motor.Part1
-	if not p0 or not p1 then return nil end
+	if not p0 or not p1 then
+		return nil
+	end
 
 	-- Attachment at the motor's C0 / C1 offsets
-	local att0      = Instance.new("Attachment")
-	att0.CFrame     = motor.C0
-	att0.Name       = "RagdollAtt0_" .. motor.Name
-	att0.Parent     = p0
+	local att0 = Instance.new("Attachment")
+	att0.CFrame = motor.C0
+	att0.Name = "RagdollAtt0_" .. motor.Name
+	att0.Parent = p0
 
-	local att1      = Instance.new("Attachment")
-	att1.CFrame     = motor.C1
-	att1.Name       = "RagdollAtt1_" .. motor.Name
-	att1.Parent     = p1
+	local att1 = Instance.new("Attachment")
+	att1.CFrame = motor.C1
+	att1.Name = "RagdollAtt1_" .. motor.Name
+	att1.Parent = p1
 
-	local bsc                    = Instance.new("BallSocketConstraint")
-	bsc.Name                     = "RagdollBSC_" .. motor.Name
-	bsc.Attachment0              = att0
-	bsc.Attachment1              = att1
-	bsc.LimitsEnabled            = true
-	bsc.UpperAngle               = 45   -- reasonable joint freedom
-	bsc.TwistLimitsEnabled       = false
-	bsc.Parent                   = p1
+	local bsc = Instance.new("BallSocketConstraint")
+	bsc.Name = "RagdollBSC_" .. motor.Name
+	bsc.Attachment0 = att0
+	bsc.Attachment1 = att1
+	bsc.LimitsEnabled = true
+	bsc.UpperAngle = 45 -- reasonable joint freedom
+	bsc.TwistLimitsEnabled = false
+	bsc.Parent = p1
 
 	return bsc
 end
@@ -119,7 +123,7 @@ local function _applyRagdoll(char: Model)
 	local humanoid = char:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		-- Prevent auto-step-up, which can fight ragdoll physics
-		humanoid.AutoRotate    = false
+		humanoid.AutoRotate = false
 		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 	end
 
@@ -175,17 +179,25 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 	assert(RunService:IsServer())
 
 	local s = _states[victim]
-	if not s then return end
+	if not s then
+		return
+	end
 
 	local char = victim.Character
-	if not char then return end
+	if not char then
+		return
+	end
 
 	local humanoid = char:FindFirstChildOfClass("Humanoid")
-	if not humanoid or humanoid.Health <= 0 then return end
+	if not humanoid or humanoid.Health <= 0 then
+		return
+	end
 
-	local victimHRP   = char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local victimHRP = char:FindFirstChild("HumanoidRootPart") :: BasePart?
 	local attackerHRP = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not victimHRP then return end
+	if not victimHRP then
+		return
+	end
 
 	-- ── Cancel existing recovery timer (refresh on each hit) ─────────────────
 	if s.RecoverTimer then
@@ -205,7 +217,7 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 	-- knocked back and crash down rather than just sliding flat.
 	if attackerHRP then
 		local launchDir = (victimHRP.Position - attackerHRP.Position)
-		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)  -- flatten to XZ plane
+		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z) -- flatten to XZ plane
 		if launchDir.Magnitude < 0.1 then
 			-- Point-blank fallback: use attacker's look vector reversed
 			local look = attackerHRP.CFrame.LookVector
@@ -214,13 +226,9 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 		launchDir = launchDir.Unit
 
 		local mass = victimHRP.AssemblyMass
-local impulse = Vector3.new(
-    launchDir.X * launchForce,
-    launchUp,
-    launchDir.Z * launchForce
-) * mass
+		local impulse = Vector3.new(launchDir.X * launchForce, launchUp, launchDir.Z * launchForce) * mass
 
-victimHRP:ApplyImpulse(impulse)
+		victimHRP:ApplyImpulse(impulse)
 	end
 
 	-- ── Keep stun pinned for the duration ────────────────────────────────────
@@ -246,7 +254,9 @@ end
 ]]
 function RagdollModule.Recover(victim: Player)
 	local s = _states[victim]
-	if not s or not s.IsRagdolled then return end
+	if not s or not s.IsRagdolled then
+		return
+	end
 
 	s.IsRagdolled = false
 	if s.RecoverTimer then
