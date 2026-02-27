@@ -37,9 +37,13 @@ end
 
 local RE_UsedM1         = _getRemote(CombatSettings.Remotes.UsedM1)
 local RE_ApplyHitEffect = _getRemote(CombatSettings.Remotes.ApplyHitEffect)
+local RE_HitConfirm     = _getRemote(CombatSettings.Remotes.HitConfirm)
 
 -- Initialise DamageModule with the remotes it needs
-DamageModule.init({ ApplyHitEffect = RE_ApplyHitEffect })
+DamageModule.init({
+	ApplyHitEffect = RE_ApplyHitEffect,
+	HitConfirm     = RE_HitConfirm,
+})
 
 -- ── Per-player state ──────────────────────────────────────────────────────────
 type PlayerCombatState = {
