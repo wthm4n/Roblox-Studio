@@ -7,6 +7,9 @@
 	  - Safe-zone & dead player filtering
 	  - Personality-driven ignore list
 	  - Returns the highest-priority target each tick
+
+	ADDED: ClearThreat() — wipes the entire threat table.
+	Used by Passive when flee timer expires so the attacker is fully forgotten.
 --]]
 
 local Players = game:GetService("Players")
@@ -24,7 +27,7 @@ function TargetSystem.new(npc: Model)
 
 	self._threatTable    = {}
 	self._losCache       = {}
-	self._ignoredPlayers = {}  -- { [Player]: true } — personality-driven
+	self._ignoredPlayers = {}
 
 	self.CurrentTarget  = nil :: Player?
 	self.LastKnownPos   = nil :: Vector3?
@@ -42,6 +45,11 @@ end
 function TargetSystem:RegisterThreat(player: Player, amount: number)
 	if not player or not player:IsA("Player") then return end
 	self._threatTable[player] = (self._threatTable[player] or 0) + amount
+end
+
+-- Wipe the entire threat table (used by Passive after flee timer expires)
+function TargetSystem:ClearThreat()
+	self._threatTable = {}
 end
 
 function TargetSystem:ClearTarget()
@@ -140,7 +148,7 @@ function TargetSystem:_selectBestTarget(): Player?
 end
 
 function TargetSystem:_isValidTarget(player: Player): boolean
-	if self._ignoredPlayers[player] then return false end
+	if self._ignoredPlayers[player] then return false end  -- ignore list check FIRST
 	if not player.Character then return false end
 
 	local hum = player.Character:FindFirstChildOfClass("Humanoid") :: Humanoid
