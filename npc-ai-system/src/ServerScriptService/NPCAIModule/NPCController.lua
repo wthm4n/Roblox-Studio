@@ -353,7 +353,7 @@ function NPCController:_updateSightCone(dt: number)
 	elseif hasTarget then
 		color = Config.Debug.SightConeColorTarget or Color3.fromRGB(80, 255, 80)
 	else
-		color = Config.Debug.SightConeColor or Color3.fromRGB(165, 180, 180)
+		color = Config.Debug.SightConeColor or Color3.fromRGB(165, 0, 3)
 	end
 
 	local segAngle = (halfAngle * 2) / CONE_SEGMENTS
