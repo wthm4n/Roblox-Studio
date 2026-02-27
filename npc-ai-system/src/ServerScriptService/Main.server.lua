@@ -17,8 +17,8 @@ local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 local ServerScriptService  = game:GetService("ServerScriptService")
 
 -- Adjust these paths to match your project layout
-local NPCController = require(game.ServerScriptService.NPCAIModule.NPCController) -- Server folder
-local Config        = require(game.ReplicatedStorage.Shared.Config) -- ReplicatedStorage.Shared folder
+local NPCController = require(script.Parent.NPCController) -- Server folder
+local Config        = require(script.Parent.Parent.Shared.Config)
 
 local NPCAssets     = ReplicatedStorage:WaitForChild("NPCAssets")
 local SpawnFolder   = workspace:WaitForChild("NPCSpawnPoints")
@@ -59,6 +59,7 @@ local function spawnNPC(templateName: string, spawnPart: BasePart)
 		root.CFrame = spawnPart.CFrame + Vector3.new(0, 3, 0)
 	end
 
+	npc:SetAttribute("IsNPC", true)  -- NPCAnimateClient watches for this
 	npc.Parent = workspace
 
 	local patrolPoints = getPatrolPoints(spawnPart)
