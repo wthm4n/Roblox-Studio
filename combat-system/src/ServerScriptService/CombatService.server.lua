@@ -58,12 +58,13 @@ RagdollModule.init(
 	StunModule
 )
 
--- Initialise DamageModule — now uses RagdollModule which handles stun internally
+-- Initialise DamageModule with all dependencies
 DamageModule.init(
 	{ ApplyHitEffect = RE_ApplyHitEffect, HitConfirm = RE_HitConfirm },
+	StunModule,
 	RagdollModule,
-	CombatSettings.Ragdoll.LaunchForce,
-	CombatSettings.Stun.Duration
+	CombatSettings.Ragdoll,           -- full ragdoll config (TriggerOnHit, Duration, LaunchForce)
+	CombatSettings.Stun.Duration      -- stun durations for non-ragdoll hits
 )
 
 -- ── Per-player state ──────────────────────────────────────────────────────────
