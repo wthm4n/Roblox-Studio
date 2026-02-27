@@ -1,8 +1,15 @@
 --[[
 	States.lua
 	Defines all FSM states for the NPC.
-	Each state is a table with Name, OnEnter, OnExit, OnUpdate.
-	The `entity` passed into each callback is the NPCController instance.
+
+	Key fixes vs original:
+	  - Flee:OnUpdate was calling Transition("Idle") every frame when HP was
+	    above the flee threshold (i.e. always for healthy NPCs). This caused
+	    the x1045 lock-while-queuing spam when Scared/Passive NPCs were in Flee.
+	  - Idle:OnUpdate was missing a `return` after Transition("Patrol"), causing
+	    it to fall through and call Transition again next frame while locked.
+	  - All OnUpdate transition calls now `return` immediately after so the FSM
+	    isn't called again on the same frame.
 --]]
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
@@ -40,8 +47,10 @@ local Idle = {
 		end
 
 		-- After a short idle, begin patrolling
+		-- FIX: added `return` so we don't fall through on the same frame
 		if entity._idleTimer >= 1.5 then
 			entity.FSM:Transition("Patrol")
+			return
 		end
 	end,
 
@@ -57,9 +66,9 @@ local Patrol = {
 
 	OnEnter = function(entity)
 		setSpeed(entity, Config.Movement.WalkSpeed)
-		entity._patrolWaiting  = false
+		entity._patrolWaiting   = false
 		entity._patrolWaitTimer = 0
-		entity._patrolIndex    = entity._patrolIndex or 1
+		entity._patrolIndex     = entity._patrolIndex or 1
 		entity:_beginNextPatrol()
 	end,
 
@@ -193,7 +202,7 @@ local Attack = {
 		local dist = distanceTo(entity, root.Position)
 
 		-- Target moved out of attack range → Chase
-		if dist > Config.Combat.AttackRange + 2 then -- +2 hysteresis buffer
+		if dist > Config.Combat.AttackRange + 2 then
 			entity.FSM:Transition("Chase")
 			return
 		end
@@ -219,17 +228,33 @@ local Flee = {
 	OnEnter = function(entity)
 		setSpeed(entity, Config.Movement.FleeSpeed)
 		entity._fleeTimer = 0
+		-- Track whether this Flee was triggered by low HP.
+		-- Personality-driven Flee (Scared/Passive) enters with full HP,
+		-- so this flag stays false and OnUpdate won't auto-exit to Idle.
+		local hum = entity.Humanoid
+		entity._fleeIsHPTriggered = hum and
+			(hum.Health / hum.MaxHealth) < Config.Combat.FleeHealthPercent
 		entity:_beginFlee()
 	end,
 
 	OnUpdate = function(entity, dt)
 		entity._fleeTimer += dt
 
-		-- Recovered enough → go back to Idle
+		-- FIX: Original code called Transition("Idle") every frame when health
+		-- was above the flee threshold — which is TRUE for all healthy NPCs,
+		-- including Scared/Passive ones that legitimately belong in Flee.
+		-- Now we only exit Flee if the NPC was ACTUALLY low health and recovered.
+		-- We track this with _wasFleeingDueToHP set in NPCController:_shouldFlee.
+		-- Simpler approach: only transition out if HP dropped below threshold first.
+		-- We use a flag set on enter to know if this Flee was HP-triggered.
 		local hum = entity.Humanoid
-		if hum and hum.Health / hum.MaxHealth >= Config.Combat.FleeHealthPercent + 0.15 then
-			entity.FSM:Transition("Idle")
-			return
+		if entity._fleeIsHPTriggered and hum then
+			local hpRatio = hum.Health / hum.MaxHealth
+			if hpRatio >= Config.Combat.FleeHealthPercent + 0.15 then
+				entity._fleeIsHPTriggered = false
+				entity.FSM:Transition("Idle")
+				return
+			end
 		end
 
 		-- Re-pick flee destination every few seconds
@@ -242,6 +267,7 @@ local Flee = {
 	OnExit = function(entity)
 		entity.Pathfinder:Stop()
 		entity._fleeTimer = 0
+		entity._fleeIsHPTriggered = false
 	end,
 }
 
