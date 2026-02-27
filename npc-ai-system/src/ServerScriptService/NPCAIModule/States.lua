@@ -49,13 +49,11 @@ local Idle = {
 		end
 
 		if entity.TargetSys.CurrentTarget then
-			if entity.Personality:CanEnterCombat() then
-				entity.FSM:Transition("Chase")
-			else
-				entity.FSM:Transition("Flee")
-			end
-			return
-		end
+    if entity.Personality:CanEnterCombat() then
+        entity.FSM:Transition("Chase")
+        return
+    end
+end
 
 		if entity._idleTimer >= 1.5 then
 			entity.FSM:Transition("Patrol")
