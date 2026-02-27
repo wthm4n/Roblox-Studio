@@ -16,10 +16,10 @@
 	  self.Personality:Destroy()        in :Destroy()
 --]]
 
-local Passive    = require(script.Parent.Passive)
-local Scared     = require(script.Parent.Scared)
-local Aggressive = require(script.Parent.Aggressive)
-local Tactical   = require(script.Parent.Tactical)
+local Passive    = require(game.ServerScriptService.NPCAIModule.Personalities.Passive)
+local Scared     = require(game.ServerScriptService.NPCAIModule.Personalities.Scared)
+local Aggressive = require(game.ServerScriptService.NPCAIModule.Personalities.Aggressive)
+local Tactical   = require(game.ServerScriptService.NPCAIModule.Personalities.Tactical)
 
 local PersonalityManager = {}
 
