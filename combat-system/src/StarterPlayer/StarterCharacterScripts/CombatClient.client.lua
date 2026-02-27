@@ -298,10 +298,16 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 end)
 
 -- ═══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: ANIMATION PLAYBACK  (swing + hit reactions)
+--  SERVER → CLIENT: ANIMATION PLAYBACK  (swing anims + hit reactions)
+--
+--  Hit reactions (HitReaction1–5) are played DIRECTLY on the victim's Animator,
+--  bypassing the Animate LocalScript entirely. This means they work even while
+--  the character is ragdolled (Animate is disabled during ragdoll).
+--
+--  Swing anims (M1–M5) play on the attacker normally.
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, comboIndex: number)
+RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, _comboIndex: number)
 	local character = targetPlayer.Character
 	if not character then return end
 
@@ -313,28 +319,66 @@ RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: 
 	elseif type(animEntry) == "string" then
 		animId = animEntry
 	end
-
 	if not animId then return end
 
-	local track = _getTrack(character, animId)
-	if not track then return end
+	local isHitReaction = animKey:sub(1, 11) == "HitReaction"
+		or animKey:sub(1, 18) == "BlockingHitReaction"
 
-	-- Stop previous swing anims to prevent blend-fighting on rapid combos
-	if animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) then
-		for i = 1, 5 do
-			local prevKey  = "M" .. tostring(i)
-			local prevData = CombatSettings.Animations[prevKey]
-			if prevData and prevKey ~= animKey then
-				local prevId    = type(prevData) == "table" and prevData.Id or prevData
-				local prevTrack = _getTrack(character, prevId)
-				if prevTrack and prevTrack.IsPlaying then
-					prevTrack:Stop(0.05)
+	if isHitReaction then
+		-- ── Play directly on Animator — works even with Animate disabled ─────
+		local humanoid  = character:FindFirstChildOfClass("Humanoid")
+		local animator  = humanoid and humanoid:FindFirstChildOfClass("Animator")
+		if not animator then return end
+
+		-- Stop any other hit reaction already playing so they don't stack
+		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+			local name = track.Animation and track.Animation.AnimationId or ""
+			-- Stop other reactions but not the ragdoll/idle if Animate is off
+			if name ~= animId then
+				local isReact = false
+				for _, key in ipairs({ "HitReaction1","HitReaction2","HitReaction3","HitReaction4","HitReaction5",
+					"BlockingHitReaction1","BlockingHitReaction2","BlockingHitReaction3","BlockingHitReaction4","BlockingHitReaction5" }) do
+					local data = CombatSettings.Animations[key]
+					if type(data) == "string" and data == name then
+						isReact = true
+						break
+					end
+				end
+				if isReact then track:Stop(0) end
+			end
+		end
+
+		-- Load + play the reaction track fresh every hit (short, one-shot)
+		local anim = Instance.new("Animation")
+		anim.AnimationId = animId
+		local track = animator:LoadAnimation(anim)
+		anim:Destroy()
+		track.Priority = Enum.AnimationPriority.Action4  -- above everything
+		track:Play(0)   -- no fade-in; snappy hit feedback
+		-- Auto-stop after it finishes so it doesn't hold the last frame
+		track.Stopped:Connect(function() track:Destroy() end)
+	else
+		-- ── Swing animation (attacker) — normal path ─────────────────────────
+		local track = _getTrack(character, animId)
+		if not track then return end
+
+		-- Stop conflicting swing anims on rapid combos
+		if animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) then
+			for i = 1, 5 do
+				local prevKey  = "M" .. tostring(i)
+				local prevData = CombatSettings.Animations[prevKey]
+				if prevData and prevKey ~= animKey then
+					local prevId    = type(prevData) == "table" and prevData.Id or prevData
+					local prevTrack = _getTrack(character, prevId)
+					if prevTrack and prevTrack.IsPlaying then
+						prevTrack:Stop(0.05)
+					end
 				end
 			end
 		end
-	end
 
-	track:Play()
+		track:Play()
+	end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════════════════
