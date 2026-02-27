@@ -11,7 +11,7 @@
 local PathfindingService = game:GetService("PathfindingService")
 local RunService         = game:GetService("RunService")
 
-local Config = require(script.Parent.Parent.Shared.Config)
+local Config = require(game.ReplicatedStorage.Shared.Config)
 
 local PathfindingController = {}
 PathfindingController.__index = PathfindingController
