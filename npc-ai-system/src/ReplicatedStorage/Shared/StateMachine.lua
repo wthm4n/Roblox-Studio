@@ -1,11 +1,12 @@
 --[[
 	StateMachine.lua
-	A clean, extensible Finite State Machine.
-
-	Fix: Same-state check now happens BEFORE the lock check.
-	This prevents the flood of "Transition called while locked. Queuing: Idle"
-	warnings that occur when OnUpdate calls Transition every frame to the
-	already-current state.
+	Fixes:
+	  1. Same-state check is FIRST — redundant transitions are dropped before
+	     the lock is ever checked, eliminating queue spam entirely.
+	  2. Lock path is silent — queuing is correct behavior, not an error.
+	  3. Queue deduplication — won't overwrite with same state name.
+	  4. Post-unlock queue guard — won't process queued state if it matches
+	     where we already landed.
 --]]
 
 local StateMachine = {}
@@ -41,22 +42,21 @@ function StateMachine.new(entity: any, states: { [string]: State }, initialState
 end
 
 function StateMachine:Transition(stateName: string)
-	-- ── 1. Validate state exists ──────────────────────────────────────────
+	-- 1. Validate
 	local newState = self.States[stateName]
 	if not newState then
 		warn("[StateMachine] State not found: " .. stateName)
 		return
 	end
 
-	-- ── 2. Drop no-op transitions (same state) BEFORE checking lock ───────
-	--    This is the critical fix: previously this check was AFTER the lock
-	--    check, so every Heartbeat call to Transition("Idle") while already
-	--    in Idle would hit the lock path and spam the queue with 2000+ entries.
+	-- 2. Drop same-state transitions BEFORE lock check
+	--    This is critical — without this, every Heartbeat call to
+	--    Transition("Idle") while already in Idle hits the lock path
 	if self.CurrentState and self.CurrentState.Name == stateName then
 		return
 	end
 
-	-- ── 3. Queue if locked (silently — no warn, queuing is correct behavior) ─
+	-- 3. Queue silently if locked (no warn — queuing is correct behavior)
 	if self._locked then
 		if self._queued ~= stateName then
 			self._queued = stateName
@@ -66,7 +66,6 @@ function StateMachine:Transition(stateName: string)
 
 	self._locked = true
 
-	-- Exit current state
 	if self.CurrentState then
 		self.PreviousStateName = self.CurrentState.Name
 		if self.CurrentState.OnExit then
@@ -74,7 +73,6 @@ function StateMachine:Transition(stateName: string)
 		end
 	end
 
-	-- Enter new state
 	self.CurrentState = newState
 	if newState.OnEnter then
 		newState.OnEnter(self.Entity)
@@ -82,11 +80,9 @@ function StateMachine:Transition(stateName: string)
 
 	self._locked = false
 
-	-- Handle queued transition (only if it's still different from current)
 	if self._queued then
 		local queued = self._queued
 		self._queued = nil
-		-- Guard: don't re-enter if the queued state matches where we landed
 		if self.CurrentState and self.CurrentState.Name ~= queued then
 			self:Transition(queued)
 		end
