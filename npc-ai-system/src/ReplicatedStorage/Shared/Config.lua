@@ -7,9 +7,9 @@ local Config = {}
 
 -- ─── Detection ─────────────────────────────────────────────────────────────
 Config.Detection = {
-	SightRange        = 200,   -- restore to sane value — 9999 breaks personalities
+	SightRange        = 150,   -- restore to sane value — 9999 breaks personalities
 	SightAngle        = 180,
-	HearRange         = 50,
+	HearRange         = 80,
 	LoseTargetTime    = 8,
 	RaycastCooldown   = 0.05,
 }
