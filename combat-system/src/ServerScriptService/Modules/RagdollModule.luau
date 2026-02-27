@@ -217,18 +217,28 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 	-- knocked back and crash down rather than just sliding flat.
 	if attackerHRP then
 		local launchDir = (victimHRP.Position - attackerHRP.Position)
-		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z) -- flatten to XZ plane
+		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)
+
 		if launchDir.Magnitude < 0.1 then
-			-- Point-blank fallback: use attacker's look vector reversed
 			local look = attackerHRP.CFrame.LookVector
 			launchDir = Vector3.new(look.X, 0, look.Z)
 		end
+
 		launchDir = launchDir.Unit
 
-		local mass = victimHRP.AssemblyMass
-		local impulse = Vector3.new(launchDir.X * launchForce, launchUp, launchDir.Z * launchForce) * mass
+		-- Force server physics control
+		victimHRP:SetNetworkOwner(nil)
 
-		victimHRP:ApplyImpulse(impulse)
+		-- Small lift to prevent ground friction killing force
+		victimHRP.CFrame += Vector3.new(0, 0.25, 0)
+
+		-- Apply on next physics frame
+		task.defer(function()
+			local mass = victimHRP.AssemblyMass
+			local impulse = Vector3.new(launchDir.X * launchForce, launchUp, launchDir.Z * launchForce) * mass
+
+			victimHRP:ApplyImpulse(impulse)
+		end)
 	end
 
 	-- ── Keep stun pinned for the duration ────────────────────────────────────
