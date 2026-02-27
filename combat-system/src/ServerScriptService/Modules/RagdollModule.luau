@@ -131,16 +131,9 @@ end
 
 local function _removeRagdoll(char: Model)
 	local humanoid = char:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		humanoid.AutoRotate = true
-		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-	end
+	local hrp: BasePart? = char:FindFirstChild("HumanoidRootPart")
 
-	for _, motor in ipairs(_getMotors(char)) do
-		motor.Enabled = true
-	end
-
-	-- Kill any leftover velocity so they don't slide on recovery
+	-- ── Kill all velocity first so nothing is sliding when we reposition ─────
 	for _, part in ipairs(char:GetDescendants()) do
 		if part:IsA("BasePart") then
 			part.AssemblyLinearVelocity = Vector3.zero
@@ -148,7 +141,39 @@ local function _removeRagdoll(char: Model)
 		end
 	end
 
+	-- ── Re-enable motors before snapping upright ─────────────────────────────
+	for _, motor in ipairs(_getMotors(char)) do
+		motor.Enabled = true
+	end
+
 	_clearRagdollConstraints(char)
+
+	-- ── Snap HRP upright ─────────────────────────────────────────────────────
+	-- The ragdoll leaves the HRP (and whole body) in whatever orientation it
+	-- landed in. We reset the HRP rotation to face the same horizontal direction
+	-- but perfectly vertical, then lift it so the feet clear the floor.
+	if hrp then
+		local pos = hrp.Position
+		local look = hrp.CFrame.LookVector
+		-- Flatten look vector — keep horizontal facing, strip any pitch/roll
+		local flatLook = Vector3.new(look.X, 0, look.Z)
+		if flatLook.Magnitude < 0.01 then
+			flatLook = Vector3.new(0, 0, -1) -- fallback direction
+		end
+		flatLook = flatLook.Unit
+
+		-- Lift by ~3 studs above current position so feet land on ground cleanly.
+		-- The Humanoid will handle settling them down naturally.
+		local standPos = Vector3.new(pos.X, pos.Y + 3, pos.Z)
+		hrp.CFrame = CFrame.lookAt(standPos, standPos + flatLook)
+	end
+
+	-- ── Now restore Humanoid state ────────────────────────────────────────────
+	if humanoid then
+		humanoid.AutoRotate = true
+		-- Running snaps them to a clean upright stance immediately
+		humanoid:ChangeState(Enum.HumanoidStateType.Running)
+	end
 end
 
 --[[
