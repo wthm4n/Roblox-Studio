@@ -1,14 +1,18 @@
 --[[
 	Scared.lua
 
-	Hysteresis fix: ShouldForceFlee() uses two thresholds.
-	  Enter flee: player <= FleeRadius
-	  Exit flee:  player > FleeRadius + 10
-	Prevents Flee<->Idle oscillation when player is on the edge of the radius.
+	Behavior:
+	  - Always ignores players for targeting (never chases, never attacks)
+	  - Detects players independently via its own proximity checks
+	  - If a player enters FleeRadius → ShouldForceFlee() = true
+	  - If a player enters HearRange (closer) → panic: random freeze/slow
+	  - If attacked → flee immediately regardless of distance
+	  - Flee ends only when no player is within FleeRadius AND not attacked
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
 local Config          = require(game.ReplicatedStorage.Shared.Config)
+local Players         = game:GetService("Players")
 
 local Scared = setmetatable({}, { __index = PersonalityBase })
 Scared.__index = Scared
@@ -18,140 +22,138 @@ local CFG = Config.Scared
 function Scared.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Scared)
 	self.Name             = "Scared"
+	self._isFleeing       = false   -- true when a player is too close
+	self._isAttacked      = false   -- true when hit, overrides distance check
+	self._attackedTimer   = 0
+	self._panicTimer      = 0       -- freeze/slow effect timer
+	self._currentSpeed    = CFG.PanicSpeed
 	self._frozen          = false
-	self._freezeTimer     = 0
-	self._tripped         = false
-	self._tripTimer       = 0
-	self._updateTimer     = 0
-	self._nearestPlayer   = nil
-	self._nearestDist     = math.huge
-	self._isThreatActive  = false  -- hysteresis flag
+
+	-- Scared NPCs never engage combat, ignore all for TargetSys
+	entity.TargetSys:IgnoreAll()
+
+	self._playerAddedConn = Players.PlayerAdded:Connect(function(player)
+		entity.TargetSys:IgnorePlayer(player)
+	end)
+
 	return self
 end
 
 -- ── Questions States.lua asks ──────────────────────────────────────────────
 
 function Scared:CanEnterCombat(): boolean
-	return false
+	return false  -- never
 end
 
 function Scared:ShouldForceFlee(): boolean
-	if self._nearestPlayer then
-		if not self._isThreatActive and self._nearestDist <= CFG.FleeRadius then
-			self._isThreatActive = true
-		elseif self._isThreatActive and self._nearestDist > CFG.FleeRadius + 10 then
-			self._isThreatActive = false
-		end
-	else
-		self._isThreatActive = false
-	end
-	return self._isThreatActive
+	return self._isFleeing or self._isAttacked
 end
 
 function Scared:GetFleeSpeed(): number?
+	-- Freeze overrides speed to 0, slow reduces it
 	if self._frozen then return 0 end
-	if self._tripped then return CFG.PanicSpeed * CFG.SlowMultiplier end
-	return CFG.PanicSpeed
+	return self._currentSpeed
 end
 
--- ── Internal update ────────────────────────────────────────────────────────
+-- ── Lifecycle ─────────────────────────────────────────────────────────────
 
 function Scared:OnUpdate(dt: number)
-	local entity = self.Entity
-
-	-- Tick timers
-	if self._frozen then
-		self._freezeTimer -= dt
-		if self._freezeTimer <= 0 then
-			self._frozen = false
+	-- ── Attacked timer ────────────────────────────────────────────────────
+	if self._isAttacked then
+		self._attackedTimer -= dt
+		if self._attackedTimer <= 0 then
+			self._isAttacked = false
 		end
 	end
 
-	if self._tripped then
-		self._tripTimer -= dt
-		if self._tripTimer <= 0 then
-			self._tripped = false
+	-- ── Panic effect timer (freeze / slow) ────────────────────────────────
+	if self._panicTimer > 0 then
+		self._panicTimer -= dt
+		if self._panicTimer <= 0 then
+			self._frozen       = false
+			self._currentSpeed = CFG.PanicSpeed
 		end
 	end
 
-	-- Apply speed
-	local speed = self:GetFleeSpeed()
-	if speed then
-		entity.Humanoid.WalkSpeed = speed
+	-- ── Proximity check — scan for any nearby player ──────────────────────
+	-- We do this ourselves because TargetSys ignores all players for Scared
+	local root         = self.Entity.RootPart
+	local anyInRange   = false
+	local anyInPanic   = false
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local char = player.Character
+		local pRoot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
+		if not pRoot then continue end
+
+		local hum = char:FindFirstChildOfClass("Humanoid") :: Humanoid
+		if not hum or hum.Health <= 0 then continue end
+
+		local dist = (root.Position - pRoot.Position).Magnitude
+
+		if dist <= CFG.FleeRadius then
+			anyInRange = true
+		end
+
+		-- Closer range triggers panic effects (freeze/slow)
+		if dist <= Config.Detection.HearRange and self._panicTimer <= 0 then
+			anyInPanic = true
+		end
 	end
 
-	-- Throttled scan
-	self._updateTimer += dt
-	if self._updateTimer < 0.25 then return end
-	self._updateTimer = 0
+	self._isFleeing = anyInRange
 
-	self._nearestPlayer, self._nearestDist = self:_scanNearestPlayer()
+	-- Trigger a panic effect if a player is very close and no effect active
+	if anyInPanic and self._panicTimer <= 0 then
+		self:_triggerPanic()
+	end
 
-	if self._isThreatActive and self._nearestPlayer then
+	-- If nothing is making us flee, reset speed to normal
+	if not self._isFleeing and not self._isAttacked then
 		if not self._frozen then
-			if math.random() < CFG.FreezeChance then
-				self._frozen      = true
-				self._freezeTimer = CFG.FreezeDuration
-				entity.Pathfinder:Stop()
-				return
-			end
-
-			if not self._tripped and math.random() < CFG.SlowChance then
-				self._tripped   = true
-				self._tripTimer = CFG.SlowDuration
-			end
-
-			self:_panicMove()
+			self._currentSpeed = CFG.PanicSpeed
 		end
 	end
 end
 
 function Scared:OnDamaged(amount: number, attacker: Player?)
-	self._frozen         = true
-	self._freezeTimer    = 0.8
-	self._isThreatActive = true  -- getting hit always activates threat
-	self.Entity.Pathfinder:Stop()
+	-- Being hit overrides everything — flee hard
+	self._isAttacked    = true
+	self._attackedTimer = 5  -- flee for 5s after being hit
+
+	-- Trigger immediate panic effect
+	self:_triggerPanic()
 end
 
--- ── Private ────────────────────────────────────────────────────────────────
+function Scared:_triggerPanic()
+	local roll = math.random()
 
-function Scared:_scanNearestPlayer(): (Player?, number)
-	local Players  = game:GetService("Players")
-	local nearest  = nil
-	local nearDist = math.huge
-	local from     = self.Entity.RootPart.Position
-	for _, p in ipairs(Players:GetPlayers()) do
-		local char = p.Character
-		local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
-		if root then
-			local d = (from - root.Position).Magnitude
-			if d < nearDist then nearDist = d; nearest = p end
-		end
+	if roll < CFG.FreezeChance then
+		-- Freeze
+		self._frozen       = true
+		self._panicTimer   = CFG.FreezeDuration
+		self._currentSpeed = 0
+	elseif roll < CFG.FreezeChance + CFG.SlowChance then
+		-- Slow
+		self._frozen       = false
+		self._currentSpeed = CFG.PanicSpeed * CFG.SlowMultiplier
+		self._panicTimer   = CFG.SlowDuration
+	else
+		-- Full panic speed
+		self._frozen       = false
+		self._currentSpeed = CFG.PanicSpeed
 	end
-	return nearest, nearDist
 end
 
-function Scared:_panicMove()
-	local entity = self.Entity
-	local player = self._nearestPlayer
-	if not player or not player.Character then return end
+function Scared:OnStateChanged(newState: string, oldState: string) end
+function Scared:OnTargetFound(target: Player) end
+function Scared:OnTargetLost() end
 
-	local root  = entity.RootPart.Position
-	local pRoot = player.Character:FindFirstChild("HumanoidRootPart") :: BasePart
-	if not pRoot then return end
-
-	local awayDir   = (root - pRoot.Position).Unit
-	local randAngle = math.rad(math.random(30, 70) * (math.random() > 0.5 and 1 or -1))
-	local cosA, sinA = math.cos(randAngle), math.sin(randAngle)
-	local panicDir  = Vector3.new(
-		awayDir.X * cosA - awayDir.Z * sinA,
-		0,
-		awayDir.X * sinA + awayDir.Z * cosA
-	).Unit
-
-	entity.Pathfinder:MoveTo(root + panicDir * 20)
+function Scared:Destroy()
+	if self._playerAddedConn then
+		self._playerAddedConn:Disconnect()
+		self._playerAddedConn = nil
+	end
 end
-
-function Scared:Destroy() end
 
 return Scared
