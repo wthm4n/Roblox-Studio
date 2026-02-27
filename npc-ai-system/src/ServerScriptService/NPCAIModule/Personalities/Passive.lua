@@ -1,7 +1,9 @@
 --[[
 	Passive.lua
-	Overrides CanEnterCombat() = false so States.lua never routes
-	this NPC into Chase or Attack. No task.defer needed.
+
+	Clean architecture: NO FSM:Transition calls anywhere in this file.
+	Passive only manages hiding/alerting logic and answers questions
+	that States.lua uses to decide transitions.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -19,23 +21,36 @@ function Passive.new(entity: any)
 	self._hideTimer   = 0
 	self._alerted     = false
 	self._updateTimer = 0
+	self._nearestPlayer = nil
+	self._nearestDist   = math.huge
 	return self
 end
 
--- This is the only gate needed — States.lua checks this before Chase/Attack
+-- ── Questions States.lua asks ──────────────────────────────────────────────
+
 function Passive:CanEnterCombat(): boolean
 	return false
 end
+
+function Passive:ShouldForceFlee(): boolean
+	return self._nearestPlayer ~= nil and self._nearestDist <= CFG.FleeRadius
+end
+
+function Passive:GetFleeSpeed(): number?
+	return CFG.FleeSpeed
+end
+
+-- ── Internal update — manages hide/alert logic ────────────────────────────
+-- Does NOT call FSM:Transition. States.lua handles that.
 
 function Passive:OnUpdate(dt: number)
 	self._updateTimer += dt
 	if self._updateTimer < 0.2 then return end
 	self._updateTimer = 0
 
-	local entity  = self.Entity
-	local rootPos = entity.RootPart.Position
-	local nearest, dist = self:_nearestPlayer(rootPos)
+	local entity = self.Entity
 
+	-- Tick hide timer
 	if self._hiding then
 		self._hideTimer += 0.2
 		if self._hideTimer >= CFG.HideDuration then
@@ -45,41 +60,50 @@ function Passive:OnUpdate(dt: number)
 		return
 	end
 
-	if nearest and dist <= CFG.FleeRadius then
+	-- Scan for nearest player
+	self._nearestPlayer, self._nearestDist = self:_scanNearestPlayer()
+
+	if self._nearestPlayer and self._nearestDist <= CFG.FleeRadius then
+		-- Alert nearby passive allies
 		if not self._alerted then
 			self._alerted = true
-			self:_alertAllies(rootPos, nearest)
+			self:_alertAllies(entity.RootPart.Position, self._nearestPlayer)
 		end
 
-		local coverPos = self:_findCover(rootPos, nearest)
-		if coverPos then
-			self._hiding    = true
-			self._hideTimer = 0
-			entity.Humanoid.WalkSpeed = CFG.FleeSpeed
-			entity.Pathfinder:MoveTo(coverPos, function()
-				entity.Pathfinder:Stop()
-			end)
-		else
-			self:_fleeFrom(nearest)
+		-- Try to hide behind cover, otherwise flee movement is handled by States
+		if not self._hiding then
+			local coverPos = self:_findCover(entity.RootPart.Position, self._nearestPlayer)
+			if coverPos then
+				self._hiding    = true
+				self._hideTimer = 0
+				entity.Humanoid.WalkSpeed = CFG.FleeSpeed
+				entity.Pathfinder:MoveTo(coverPos, function()
+					entity.Pathfinder:Stop()
+				end)
+			end
 		end
 	else
 		self._alerted = false
 		entity.Humanoid.WalkSpeed = Config.Movement.WalkSpeed
-		local state = entity.FSM:GetState()
-		if state ~= "Patrol" and state ~= "Idle" then
-			entity.FSM:Transition("Idle")
-		end
 	end
 end
 
 function Passive:OnDamaged(amount: number, attacker: Player?)
-	if attacker then self:_fleeFrom(attacker) end
+	-- Record attacker as nearest threat so ShouldForceFlee triggers
+	if attacker then
+		self._nearestPlayer = attacker
+		local pRoot = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart") :: BasePart
+		self._nearestDist = pRoot and (self.Entity.RootPart.Position - pRoot.Position).Magnitude or 0
+	end
 end
 
-function Passive:_nearestPlayer(from: Vector3): (Player?, number)
+-- ── Private ────────────────────────────────────────────────────────────────
+
+function Passive:_scanNearestPlayer(): (Player?, number)
 	local Players  = game:GetService("Players")
 	local nearest  = nil
 	local nearDist = math.huge
+	local from     = self.Entity.RootPart.Position
 	for _, p in ipairs(Players:GetPlayers()) do
 		local char = p.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
@@ -89,16 +113,6 @@ function Passive:_nearestPlayer(from: Vector3): (Player?, number)
 		end
 	end
 	return nearest, nearDist
-end
-
-function Passive:_fleeFrom(player: Player)
-	local entity = self.Entity
-	local root   = entity.RootPart.Position
-	local pRoot  = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart
-	if not pRoot then return end
-	local away = (root - pRoot.Position).Unit
-	entity.Humanoid.WalkSpeed = CFG.FleeSpeed
-	entity.Pathfinder:MoveTo(root + away * CFG.FleeRadius)
 end
 
 function Passive:_findCover(from: Vector3, player: Player): Vector3?
@@ -117,10 +131,10 @@ function Passive:_findCover(from: Vector3, player: Player): Vector3?
 		local d = (from - part.Position).Magnitude
 		if d > CFG.HideSearchRadius then continue end
 
-		local toPartDir = (part.Position - from).Unit
-		local dot = toPlayer:Dot(toPartDir)
+		local toPartDir      = (part.Position - from).Unit
+		local dot            = toPlayer:Dot(toPartDir)
 		local awayFromPlayer = (part.Position - pRoot.Position).Unit
-		local hidePos = part.Position + awayFromPlayer * (part.Size.X * 0.5 + 3)
+		local hidePos        = part.Position + awayFromPlayer * (part.Size.X * 0.5 + 3)
 		hidePos = Vector3.new(hidePos.X, from.Y, hidePos.Z)
 
 		local score = -dot + (1 / (d + 1))
