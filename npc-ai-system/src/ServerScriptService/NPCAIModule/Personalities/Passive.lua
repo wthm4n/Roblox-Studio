@@ -1,30 +1,4 @@
---[[
-	Passive.lua
-
-	Behavior:
-	  - Patrols and completely ignores all players by default
-	  - ONLY reacts when directly attacked (OnDamaged fires)
-	  - On attacked: flees from attacker for FLEE_DURATION seconds
-	  - Never chases, never attacks back (CanEnterCombat always false)
-	  - After flee timer: re-ignores everyone, clears threat table, back to patrol
-
-	Why IgnoreAll at spawn:
-	  TargetSys._selectBestTarget iterates ALL players and picks nearest.
-	  If a player is in the ignore list they are skipped entirely.
-	  This means CurrentTarget stays nil → Idle/Patrol never see a target
-	  → Chase/Attack are never triggered from States.lua.
-
-	Why we only UnignorePlayer the attacker:
-	  _beginFlee needs a direction. It reads TargetSys.CurrentTarget to
-	  know which way to run. So we briefly unignore just the attacker so
-	  TargetSys picks them up, giving _beginFlee a flee direction.
-	  Everyone else stays ignored.
-
-	Why we RegisterThreat for the attacker:
-	  TargetSys._selectBestTarget also uses threat priority. By registering
-	  threat for the attacker we guarantee they become CurrentTarget (not
-	  some random other player who happens to be closer).
---]]
+-- Passive.lua (Calm → Aggressive → Flee on Low HP)
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
 local Config          = require(game.ReplicatedStorage.Shared.Config)
@@ -33,22 +7,21 @@ local Players         = game:GetService("Players")
 local Passive = setmetatable({}, { __index = PersonalityBase })
 Passive.__index = Passive
 
-local CFG           = Config.Passive
-local FLEE_DURATION = 6
+local CFG = Config.Passive
 
 function Passive.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Passive)
-	self.Name        = "Passive"
-	self._fleeTimer  = 0
-	self._isProvoked = false
-	self._attacker   = nil
 
-	-- Ignore everyone at spawn
+	self.Name            = "Passive"
+	self._provoked       = false
+	self._retreating     = false
+	self._retreatTimer   = 0
+
+	-- Ignore all players initially
 	entity.TargetSys:IgnoreAll()
 
-	-- Ignore players who join mid-session while not provoked
 	self._playerAddedConn = Players.PlayerAdded:Connect(function(player)
-		if not self._isProvoked then
+		if not self._provoked then
 			entity.TargetSys:IgnorePlayer(player)
 		end
 	end)
@@ -56,55 +29,65 @@ function Passive.new(entity: any)
 	return self
 end
 
--- ── Questions States.lua asks ──────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
 
 function Passive:CanEnterCombat(): boolean
-	return false  -- never, under any circumstances
+	return self._provoked and not self._retreating
 end
 
 function Passive:ShouldForceFlee(): boolean
-	return self._isProvoked
+	return self._retreating
 end
 
 function Passive:GetFleeSpeed(): number?
 	return CFG.FleeSpeed
 end
 
--- ── Lifecycle ─────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
 
 function Passive:OnUpdate(dt: number)
-	if not self._isProvoked then return end
+	local entity  = self.Entity
+	local hum     = entity.Humanoid
+	local hpRatio = hum.Health / hum.MaxHealth
 
-	self._fleeTimer -= dt
-	if self._fleeTimer <= 0 then
-		self._isProvoked = false
-		self._attacker   = nil
+	-- If currently retreating
+	if self._retreating then
+		self._retreatTimer -= dt
 
-		-- Wipe the threat table so the attacker is no longer tracked
-		-- then re-ignore everyone so TargetSys goes blind again
-		self.Entity.TargetSys:ClearThreat()
-		self.Entity.TargetSys:IgnoreAll()
-		self.Entity.TargetSys:ClearTarget()
+		-- Recover condition
+		if hpRatio >= CFG.RetreatingHP + 0.2 or self._retreatTimer <= 0 then
+			self._retreating = false
+			self._provoked   = false
+
+			entity.TargetSys:ClearThreat()
+			entity.TargetSys:IgnoreAll()
+			entity.TargetSys:ClearTarget()
+		end
+
+		return
+	end
+
+	-- Enter retreat mode if low HP
+	if self._provoked and hpRatio <= CFG.RetreatingHP then
+		self._retreating   = true
+		self._retreatTimer = 5
 	end
 end
+
+-- ─────────────────────────────────────────────────────────────
 
 function Passive:OnDamaged(amount: number, attacker: Player?)
-	self._isProvoked = true
-	self._fleeTimer  = FLEE_DURATION
-	self._attacker   = attacker
+	if not attacker then return end
 
-	if attacker then
-		-- Unignore ONLY the attacker and register their threat so they
-		-- become CurrentTarget — this gives _beginFlee a flee direction
-		self.Entity.TargetSys:UnignorePlayer(attacker)
-		self.Entity.TargetSys:RegisterThreat(attacker, amount)
-	end
-	-- No Pathfinder call here — Flee.OnEnter calls _beginFlee
+	self._provoked = true
+	self._retreating = false
+
+	-- Allow targeting system to work now
+	self.Entity.TargetSys:UnignorePlayer(attacker)
+	self.Entity.TargetSys:RegisterThreat(attacker, amount * 2)
 end
 
-function Passive:OnStateChanged(newState: string, oldState: string) end
-function Passive:OnTargetFound(target: Player) end
-function Passive:OnTargetLost() end
+-- ─────────────────────────────────────────────────────────────
 
 function Passive:Destroy()
 	if self._playerAddedConn then
