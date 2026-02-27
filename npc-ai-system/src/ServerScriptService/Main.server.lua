@@ -18,7 +18,7 @@ local ServerScriptService  = game:GetService("ServerScriptService")
 
 -- Adjust these paths to match your project layout
 local NPCController = require(game.ServerScriptService.NPCAIModule.NPCController) -- Server folder
-local Config        = require(script.Parent.Parent.Shared.Config)
+local Config        = require(game.Re)
 
 local NPCAssets     = ReplicatedStorage:WaitForChild("NPCAssets")
 local SpawnFolder   = workspace:WaitForChild("NPCSpawnPoints")
