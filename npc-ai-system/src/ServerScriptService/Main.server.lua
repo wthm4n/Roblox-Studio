@@ -59,7 +59,6 @@ local function spawnNPC(templateName: string, spawnPart: BasePart)
 		root.CFrame = spawnPart.CFrame + Vector3.new(0, 3, 0)
 	end
 
-	npc:SetAttribute("IsNPC", true)  -- NPCAnimateClient watches for this
 	npc.Parent = workspace
 
 	local patrolPoints = getPatrolPoints(spawnPart)
