@@ -1,21 +1,19 @@
 --[[
 	RagdollModule.lua  (SERVER)
-	Converts a character into a physics ragdoll on hit, launches them backward,
-	and auto-recovers after a duration.
+	Converts a character into a physics ragdoll on hit, launches them like they
+	got actually picked up and thrown — full body blast + tumble spin.
 
-	HOW IT WORKS:
-	  1. On hit: disable the Humanoid's motor joints (R6 or R15) by setting their
-	     MaxVelocity to 0, and enable pre-made BallSocketConstraints so the body
-	     goes limp under gravity.
-	  2. Apply a launch velocity on the HRP in the direction away from the attacker
-	     + slight upward arc, so they fly back like they got punched.
-	  3. Fire Ragdoll remote → all clients disable their Animate LocalScript on
-	     the victim so animations don't fight the physics.
-	  4. After the ragdoll duration, re-enable the joints and fire RagdollEnd.
-	  5. Stun is tied to ragdoll: while ragdolled, IsStunned always returns true.
-
-	R6 joints affected: Root, Neck, Left Shoulder, Right Shoulder, Left Hip, Right Hip
-	R15: every Motor6D found under the character
+	HOW THE LAUNCH WORKS:
+	  1. Ragdoll activates (motors off, BallSockets on, Humanoid → Physics)
+	  2. SetNetworkOwner(nil) so server fully owns physics
+	  3. Lift HRP 0.4 studs off ground to break floor friction
+	  4. task.defer waits ONE physics frame for the engine to fully detach motors
+	  5. Every BasePart in the character gets a DIRECT velocity set (not impulse)
+	     → This bypasses mass entirely — all limbs fly together
+	  6. HRP gets an extra upward pop for arc height
+	  7. A random angular velocity is applied to HRP for tumble spin
+	  8. A secondary task.delay(0.05) re-applies velocity in case the engine
+	     clamped it on the first frame (happens sometimes with Humanoid states)
 
 	Place in: ServerScriptService/Modules/RagdollModule
 ]]
@@ -29,9 +27,8 @@ local RunService = game:GetService("RunService")
 
 -- ── Module state ──────────────────────────────────────────────────────────────
 local _remotes: { [string]: RemoteEvent } = {}
-local _stunModule = nil -- injected; used to keep stun active during ragdoll
+local _stunModule = nil
 
--- Per-player ragdoll state
 type RagdollState = {
 	IsRagdolled: boolean,
 	RecoverTimer: thread?,
@@ -39,11 +36,6 @@ type RagdollState = {
 local _states: { [Player]: RagdollState } = {}
 
 -- ── Init ──────────────────────────────────────────────────────────────────────
---[[
-	RagdollModule.init(remotes, stunModule)
-	  remotes    : { Ragdoll: RemoteEvent, RagdollEnd: RemoteEvent }
-	  stunModule  : StunModule table (for keeping stun locked during ragdoll)
-]]
 function RagdollModule.init(remotes, stunModule)
 	assert(RunService:IsServer(), "RagdollModule.init must run on server!")
 	_remotes = remotes
@@ -66,7 +58,6 @@ end
 
 -- ── Private ───────────────────────────────────────────────────────────────────
 
--- Collects all Motor6D joints in a character model
 local function _getMotors(char: Model): { Motor6D }
 	local motors = {}
 	for _, desc in ipairs(char:GetDescendants()) do
@@ -77,8 +68,6 @@ local function _getMotors(char: Model): { Motor6D }
 	return motors
 end
 
--- Creates a BallSocketConstraint between part0 and part1 of a Motor6D.
--- The constraint is parented to part1 so it's cleaned up when the character resets.
 local function _createBallSocket(motor: Motor6D): BallSocketConstraint?
 	local p0 = motor.Part0
 	local p1 = motor.Part1
@@ -86,7 +75,6 @@ local function _createBallSocket(motor: Motor6D): BallSocketConstraint?
 		return nil
 	end
 
-	-- Attachment at the motor's C0 / C1 offsets
 	local att0 = Instance.new("Attachment")
 	att0.CFrame = motor.C0
 	att0.Name = "RagdollAtt0_" .. motor.Name
@@ -102,14 +90,13 @@ local function _createBallSocket(motor: Motor6D): BallSocketConstraint?
 	bsc.Attachment0 = att0
 	bsc.Attachment1 = att1
 	bsc.LimitsEnabled = true
-	bsc.UpperAngle = 45 -- reasonable joint freedom
+	bsc.UpperAngle = 45
 	bsc.TwistLimitsEnabled = false
 	bsc.Parent = p1
 
 	return bsc
 end
 
--- Removes all ragdoll constraints + attachments we created
 local function _clearRagdollConstraints(char: Model)
 	for _, desc in ipairs(char:GetDescendants()) do
 		if desc.Name:sub(1, 7) == "Ragdoll" then
@@ -118,36 +105,30 @@ local function _clearRagdollConstraints(char: Model)
 	end
 end
 
--- Enable ragdoll physics: disable motors, create BallSockets
 local function _applyRagdoll(char: Model)
 	local humanoid = char:FindFirstChildOfClass("Humanoid")
 	if humanoid then
-		-- Prevent auto-step-up, which can fight ragdoll physics
 		humanoid.AutoRotate = false
 		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 	end
 
-	local motors = _getMotors(char)
-	for _, motor in ipairs(motors) do
-		-- Disable the motor so the joint goes limp
+	for _, motor in ipairs(_getMotors(char)) do
 		motor.Enabled = false
 		_createBallSocket(motor)
 	end
 
-	-- Make all parts in the character collidable + unanchored so they fall
 	for _, part in ipairs(char:GetDescendants()) do
 		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
 			part.CanCollide = true
 		end
 	end
-	-- HRP stays unanchored but non-collidable (standard Roblox setup)
+
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	if hrp then
 		(hrp :: BasePart).CanCollide = false
 	end
 end
 
--- Recover from ragdoll: re-enable motors, destroy constraints
 local function _removeRagdoll(char: Model)
 	local humanoid = char:FindFirstChildOfClass("Humanoid")
 	if humanoid then
@@ -155,12 +136,36 @@ local function _removeRagdoll(char: Model)
 		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 	end
 
-	local motors = _getMotors(char)
-	for _, motor in ipairs(motors) do
+	for _, motor in ipairs(_getMotors(char)) do
 		motor.Enabled = true
 	end
 
+	-- Kill any leftover velocity so they don't slide on recovery
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.AssemblyLinearVelocity = Vector3.zero
+			part.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+
 	_clearRagdollConstraints(char)
+end
+
+--[[
+	_blastCharacter(char, launchVel, tumbleSpin)
+	Sets velocity directly on EVERY BasePart so the whole body flies as one unit.
+	Direct velocity assignment beats ApplyImpulse here because:
+	  • No mass math needed — everyone gets the same velocity regardless of limb weight
+	  • Guaranteed to override whatever the Humanoid physics engine set last frame
+	  • Looks physically correct — limbs don't stretch or separate
+]]
+local function _blastCharacter(char: Model, launchVel: Vector3, tumbleSpin: Vector3)
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.AssemblyLinearVelocity = launchVel
+			part.AssemblyAngularVelocity = tumbleSpin
+		end
+	end
 end
 
 -- ── Public API ────────────────────────────────────────────────────────────────
@@ -168,12 +173,10 @@ end
 --[[
 	RagdollModule.Apply(victim, attacker, duration, launchForce, launchUp)
 	  victim      : Player
-	  attacker    : Player  — used to calculate launch direction (away from them)
+	  attacker    : Player  — used to calculate throw direction (away from them)
 	  duration    : number  — seconds until auto-recovery
-	  launchForce : number  — horizontal studs/s (how far back)
-	  launchUp    : number  — vertical studs/s (how high the pop is)
-
-	If victim is already ragdolled, refreshes the timer (keeps them down mid-combo).
+	  launchForce : number  — horizontal speed (studs/s) — how far they travel
+	  launchUp    : number  — vertical speed (studs/s) — height of the arc
 ]]
 function RagdollModule.Apply(victim: Player, attacker: Player, duration: number, launchForce: number, launchUp: number)
 	assert(RunService:IsServer())
@@ -193,65 +196,96 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 		return
 	end
 
-	local victimHRP = char:FindFirstChild("HumanoidRootPart") :: BasePart?
-	local attackerHRP = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local victimHRP: BasePart? = char:FindFirstChild("HumanoidRootPart")
+	local attackerChar = attacker.Character
+	local attackerHRP: BasePart? = attackerChar and attackerChar:FindFirstChild("HumanoidRootPart")
 	if not victimHRP then
 		return
 	end
 
-	-- ── Cancel existing recovery timer (refresh on each hit) ─────────────────
+	-- ── Cancel any existing recovery timer (combo extension) ─────────────────
 	if s.RecoverTimer then
 		task.cancel(s.RecoverTimer)
 		s.RecoverTimer = nil
 	end
 
-	-- ── Apply ragdoll physics if not already ragdolled ────────────────────────
+	-- ── Activate ragdoll physics (only if not already ragdolled) ─────────────
 	if not s.IsRagdolled then
 		s.IsRagdolled = true
 		_applyRagdoll(char)
 	end
 
-	-- ── Launch velocity: back + small upward pop → falls to ground ──────────────
-	-- Horizontal component sends them 5-10 studs back.
-	-- Vertical component gives a short arc (2-3 studs up) so they visibly get
-	-- knocked back and crash down rather than just sliding flat.
+	-- ── Build launch direction ────────────────────────────────────────────────
+	local launchDir: Vector3
 	if attackerHRP then
-		local launchDir = (victimHRP.Position - attackerHRP.Position)
-		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)
-
+		local raw = victimHRP.Position - attackerHRP.Position
+		launchDir = Vector3.new(raw.X, 0, raw.Z)
 		if launchDir.Magnitude < 0.1 then
 			local look = attackerHRP.CFrame.LookVector
 			launchDir = Vector3.new(look.X, 0, look.Z)
 		end
-
 		launchDir = launchDir.Unit
-
-		-- Force server physics control
-		victimHRP:SetNetworkOwner(nil)
-
-		-- Small lift to prevent ground friction killing force
-		victimHRP.CFrame += Vector3.new(0, 0.25, 0)
-
-		-- Apply on next physics frame
-		task.defer(function()
-			local mass = victimHRP.AssemblyMass
-			local impulse = Vector3.new(launchDir.X * launchForce, launchUp, launchDir.Z * launchForce) * mass
-
-			victimHRP:ApplyImpulse(impulse)
-		end)
+	else
+		launchDir = victimHRP.CFrame.LookVector * -1 -- fallback: backward
+		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z).Unit
 	end
 
-	-- ── Keep stun pinned for the duration ────────────────────────────────────
+	-- ── Final velocity vector: horizontal throw + upward arc ─────────────────
+	--   We combine them so the body actually arcs upward and forward, not just
+	--   flies straight horizontally. The Y component is what gives the "picked up"
+	--   feeling before they crash back down.
+	local throwVelocity = Vector3.new(launchDir.X * launchForce, launchUp, launchDir.Z * launchForce)
+
+	-- ── Tumble spin: rotate around the axis perpendicular to throw direction ──
+	--   This makes the body visually spin/flip as it flies — not just slide.
+	--   Spin axis = cross of launchDir and UP = roughly the "left/right" axis
+	--   relative to the throw. Random sign for variation.
+	local spinAxis = launchDir:Cross(Vector3.new(0, 1, 0)).Unit
+	local spinSign = (math.random() > 0.5) and 1 or -1
+	local spinSpeed = math.random(4, 8) -- radians/sec — good visible tumble
+	local tumbleSpin = spinAxis * spinSpeed * spinSign
+
+	-- ── Give server full physics ownership ───────────────────────────────────
+	victimHRP:SetNetworkOwner(nil)
+
+	-- ── Lift off the ground to break floor friction + contact constraints ─────
+	victimHRP.CFrame = victimHRP.CFrame + Vector3.new(0, 0.5, 0)
+
+	-- ── Apply on next physics step (motor detach needs one frame to settle) ───
+	task.defer(function()
+		-- Check character is still valid
+		if not victim.Character or victim.Character ~= char then
+			return
+		end
+		_blastCharacter(char, throwVelocity, tumbleSpin)
+	end)
+
+	-- ── Re-apply 1 tick later as insurance (Humanoid sometimes clamps vel) ────
+	task.delay(0.05, function()
+		if not s.IsRagdolled then
+			return
+		end
+		if not victim.Character or victim.Character ~= char then
+			return
+		end
+		-- Only re-blast if they're suspiciously slow (got clamped)
+		local curSpeed = victimHRP.AssemblyLinearVelocity.Magnitude
+		if curSpeed < launchForce * 0.5 then
+			_blastCharacter(char, throwVelocity, tumbleSpin)
+		end
+	end)
+
+	-- ── Pin stun for the full ragdoll duration ────────────────────────────────
 	if _stunModule then
 		_stunModule.Apply(victim, duration)
 	end
 
-	-- ── Notify clients → disable Animate script on victim ────────────────────
+	-- ── Notify clients → disable Animate on victim ───────────────────────────
 	if _remotes.Ragdoll then
 		_remotes.Ragdoll:FireAllClients(victim, true)
 	end
 
-	-- ── Schedule recovery ─────────────────────────────────────────────────────
+	-- ── Schedule auto-recovery ────────────────────────────────────────────────
 	s.RecoverTimer = task.delay(duration, function()
 		s.RecoverTimer = nil
 		RagdollModule.Recover(victim)
@@ -260,7 +294,7 @@ end
 
 --[[
 	RagdollModule.Recover(victim)
-	Force-end ragdoll immediately (death, round end, etc).
+	Force-end ragdoll (death, round end, tech roll).
 ]]
 function RagdollModule.Recover(victim: Player)
 	local s = _states[victim]
@@ -279,12 +313,10 @@ function RagdollModule.Recover(victim: Player)
 		_removeRagdoll(char)
 	end
 
-	-- Tell clients to re-enable Animate
 	if _remotes.RagdollEnd then
 		_remotes.RagdollEnd:FireAllClients(victim)
 	end
 
-	-- Release stun too (if it hasn't expired naturally)
 	if _stunModule then
 		_stunModule.Release(victim, "ragdoll_recover")
 	end
