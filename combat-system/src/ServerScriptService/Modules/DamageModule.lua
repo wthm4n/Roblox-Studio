@@ -32,8 +32,8 @@ end
 -- ── Module-level init (call once from CombatService) ─────────────────────────
 --[[
 	DamageModule.init(remoteTable)
-	remoteTable: { ApplyHitEffect: RemoteEvent }
-	Provides the remote needed to tell clients to play hit-reaction animations.
+	remoteTable: { ApplyHitEffect: RemoteEvent, HitConfirm: RemoteEvent }
+	Provides the remotes needed for visual/audio feedback.
 ]]
 function DamageModule.init(remoteTable: { [string]: RemoteEvent })
 	_remotes = remoteTable
@@ -41,7 +41,7 @@ end
 
 -- ── Private ───────────────────────────────────────────────────────────────────
 
-local HIT_REACTIONS = { "HitReaction1", "HitReaction2", "HitReaction3", "HitReaction4", "HitReaction5" }
+local HIT_REACTIONS   = { "HitReaction1", "HitReaction2", "HitReaction3", "HitReaction4", "HitReaction5" }
 local BLOCK_REACTIONS = { "BlockingHitReaction1", "BlockingHitReaction2", "BlockingHitReaction3", "BlockingHitReaction4", "BlockingHitReaction5" }
 
 local function _pickRandom(t: { string }): string
@@ -54,12 +54,16 @@ end
 	:Apply(victim, amount, comboIndex)
 		victim     : Player — receiving the hit
 		amount     : number — raw damage
-		comboIndex : number — which hit in the chain (used for knockback scaling)
+		comboIndex : number — which hit in the chain
 
 	Returns true if damage was applied, false if victim was already dead / invalid.
+
+	On success fires:
+	  • ApplyHitEffect → ALL clients  (hit-reaction animation on victim)
+	  • HitConfirm     → ALL clients  (red highlight on victim + hit sound + cam shake on attacker)
 ]]
 function DamageModule:Apply(victim: Player, amount: number, comboIndex: number): boolean
-	local attacker   = self._attacker
+	local attacker = self._attacker
 	if victim == attacker then return false end
 
 	local victimChar = victim.Character
@@ -71,11 +75,18 @@ function DamageModule:Apply(victim: Player, amount: number, comboIndex: number):
 	-- ── Apply damage ─────────────────────────────────────────────────────────
 	humanoid:TakeDamage(amount)
 
-	-- ── Notify all clients to play hit-reaction visuals ─────────────────────
-	-- We fire to ALL clients so everyone sees the reaction (not just the victim).
+	-- ── Hit-reaction animation (everyone sees this) ──────────────────────────
 	local reactionAnim = _pickRandom(HIT_REACTIONS)
 	if _remotes.ApplyHitEffect then
 		_remotes.ApplyHitEffect:FireAllClients(victim, reactionAnim, comboIndex)
+	end
+
+	-- ── HitConfirm: highlight + hit sound + camera shake ────────────────────
+	-- Payload: attacker (for cam shake / hit sound on their client),
+	--          victim   (for highlight on all clients),
+	--          comboIndex (to pick the right sound / shake profile)
+	if _remotes.HitConfirm then
+		_remotes.HitConfirm:FireAllClients(attacker, victim, comboIndex)
 	end
 
 	return true
@@ -84,6 +95,7 @@ end
 --[[
 	:ApplyBlocked(victim, amount)
 	Reduced damage when the victim is blocking; plays a block-reaction animation.
+	Does NOT fire HitConfirm (no camera shake / hit sound for blocked hits).
 ]]
 function DamageModule:ApplyBlocked(victim: Player, amount: number): boolean
 	local blockDamage = math.floor(amount * 0.15)  -- 15% chip damage on block
@@ -99,6 +111,8 @@ function DamageModule:ApplyBlocked(victim: Player, amount: number): boolean
 	if _remotes.ApplyHitEffect then
 		_remotes.ApplyHitEffect:FireAllClients(victim, reactionAnim, 0)
 	end
+
+	-- Optionally fire a softer BlockHit confirm here in Phase 2
 
 	return true
 end
