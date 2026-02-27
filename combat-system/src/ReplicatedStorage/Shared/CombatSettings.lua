@@ -141,19 +141,24 @@ CombatSettings.Stun = {
 --  RAGDOLL SYSTEM  (last hit of combo only: M4 / M5 finisher)
 -- ══════════════════════════════════════════
 CombatSettings.Ragdoll = {
-	-- Horizontal launch force (studs/s). Pure backward — NO upward component.
-	-- Victim slides/stumbles along the ground rather than flying into the air.
+	-- Horizontal launch force (studs/s) — how far back they get sent.
+	-- ~5-10 studs of travel. Keep this modest so it doesn't feel floaty.
 	LaunchForce = {
-		[4] = 42,    -- M4 combo ender
-		[5] = 65,    -- M5 finisher
+		[4] = 36,    -- M4 combo ender
+		[5] = 48,    -- M5 finisher
+	},
+	-- Vertical launch force (studs/s) — the upward "pop" before they crash down.
+	-- Small enough that they go up maybe 2-3 studs then fall, not into orbit.
+	LaunchUp = {
+		[4] = 18,    -- M4: short pop
+		[5] = 24,    -- M5: slightly higher arc on the finisher
 	},
 	-- How long they stay ragdolled (seconds).
 	Duration = {
-		[4] = 1.4,   -- M4
-		[5] = 2.2,   -- M5 finisher
+		[4] = 1.4,
+		[5] = 2.2,
 	},
-	-- Which combo indices trigger a ragdoll. Everything else gets stun-only.
-	-- MaxHits = 4, so hit 4 is the combo ender. Hit 5 is the finisher loop.
+	-- Which combo indices trigger a ragdoll. Everything else is stun-only.
 	TriggerOnHit = { [4] = true, [5] = true },
 }
 
