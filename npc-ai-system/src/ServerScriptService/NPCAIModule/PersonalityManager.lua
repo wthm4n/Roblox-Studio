@@ -65,6 +65,12 @@ function PersonalityManager.create(entity: any): any
 	local instance: any
 	local PersonalityClass = personalityName and REGISTRY[personalityName]
 
+	if personalityName and not PersonalityClass then
+		-- Likely a typo in the spawn point attribute — warn loudly
+		warn(("[PersonalityManager] Unknown personality '%s' on %s — check spelling! Valid: Passive, Scared, Aggressive, Tactical"):format(
+			personalityName, entity.NPC.Name))
+	end
+
 	if PersonalityClass then
 		instance = PersonalityClass.new(entity)
 		print(("[PersonalityManager] '%s' assigned to %s"):format(personalityName, entity.NPC.Name))
