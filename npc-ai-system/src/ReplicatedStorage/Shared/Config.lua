@@ -60,6 +60,7 @@ Config.Passive = {
 	AllyAlertRadius   = 50,
 	FleeSpeed         = 22,
 	HideDuration      = 8,
+	RetreatingHP      = 0.30,
 }
 
 Config.Scared = {
