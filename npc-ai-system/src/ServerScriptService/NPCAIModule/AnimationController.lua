@@ -20,7 +20,7 @@ AnimationController.__index = AnimationController
 -- These play ON TOP of whatever Animate is doing (higher priority)
 local ACTION_IDS = {
 	Attack = "rbxassetid://115362763052284",  -- default punch/tool slash
-	Hurt   = "rbxassetid://180435397",  -- default hit react
+	Hurt   = "rbxassetid://73704150667330",  -- default hit react
 }
 
 local FADE = {
