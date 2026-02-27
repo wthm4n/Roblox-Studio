@@ -150,8 +150,8 @@ CombatSettings.Ragdoll = {
 	-- Vertical launch force (studs/s) — the upward "pop" before they crash down.
 	-- Small enough that they go up maybe 2-3 studs then fall, not into orbit.
 	LaunchUp = {
-		[4] = 18,    -- M4: short pop
-		[5] = 24,    -- M5: slightly higher arc on the finisher
+		[4] = 35,    -- M4: short pop
+		[5] = 55,    -- M5: slightly higher arc on the finisher
 	},
 	-- How long they stay ragdolled (seconds).
 	Duration = {
