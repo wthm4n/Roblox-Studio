@@ -17,7 +17,7 @@ local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 local ServerScriptService  = game:GetService("ServerScriptService")
 
 -- Adjust these paths to match your project layout
-local NPCController = require(game.ServerScri) -- Server folder
+local NPCController = require(game.ServerScriptService.) -- Server folder
 local Config        = require(script.Parent.Parent.Shared.Config)
 
 local NPCAssets     = ReplicatedStorage:WaitForChild("NPCAssets")
