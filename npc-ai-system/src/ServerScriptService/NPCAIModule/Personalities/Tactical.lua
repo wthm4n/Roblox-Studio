@@ -11,7 +11,7 @@
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
-local Config          = require(script.Parent.Parent.Parent.Shared.Config)
+local Config          = require(game.ReplicatedStorage.Shared.Config)
 
 local Tactical = setmetatable({}, { __index = PersonalityBase })
 Tactical.__index = Tactical
