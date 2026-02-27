@@ -6,12 +6,12 @@
 
 local RunService = game:GetService("RunService")
 
-local StateMachine          = require(script.Parent.Parent.Shared.StateMachine)
-local Config                = require(script.Parent.Parent.Shared.Config)
-local PathfindingController = require(script.Parent.PathfindingController)
-local TargetSystem          = require(script.Parent.TargetSystem)
-local AnimationController   = require(script.Parent.AnimationController)
-local States                = require(script.Parent.States)
+local StateMachine          = require(game.ReplicatedStorage.Shared.StateMachine) -- ReplicatedStorage.Shared folder
+local Config                = require(game.ReplicatedStorage.Shared.Config)
+local PathfindingController = require(game.ServerScriptService.NPCAIModule.PathfindingController) -- Server folder
+local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem) -- Server folder
+local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController) --
+local States                = require(game.ServerScriptService.NPCAIModule.States) -- Server folder
 
 local NPCController = {}
 NPCController.__index = NPCController
