@@ -82,10 +82,11 @@ function DamageModule:Apply(victim: Player, amount: number, comboIndex: number):
 		_ragdollConfig.TriggerOnHit[comboIndex] == true
 
 	if isRagdollHit and _ragdollModule then
-		-- Last hit of combo — full ragdoll with horizontal push, no upward arc
+		-- Last hit of combo — full ragdoll with backward launch + upward pop
 		local duration    = _ragdollConfig.Duration[comboIndex]    or 1.4
-		local launchForce = _ragdollConfig.LaunchForce[comboIndex] or 42
-		_ragdollModule.Apply(victim, self._attacker, duration, launchForce)
+		local launchForce = _ragdollConfig.LaunchForce[comboIndex] or 36
+		local launchUp    = _ragdollConfig.LaunchUp and _ragdollConfig.LaunchUp[comboIndex] or 18
+		_ragdollModule.Apply(victim, self._attacker, duration, launchForce, launchUp)
 	elseif _stunModule then
 		-- Earlier hits — movement lock only, no physics ragdoll
 		local duration = _stunDurations[comboIndex] or _stunDurations[1] or 0.7
