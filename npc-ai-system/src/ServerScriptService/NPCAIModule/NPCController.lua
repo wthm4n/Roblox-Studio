@@ -6,12 +6,12 @@
 
 local RunService = game:GetService("RunService")
 
-local StateMachine          = require(game.ReplicatedStorage.Shared.StateMachine) -- ReplicatedStorage.Shared folder
-local Config                = require(game.ReplicatedStorage.Shared.Config)
-local PathfindingController = require(game.ServerScriptService.NPCAIModule.PathfindingController) -- Server folder
-local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem) -- Server folder
-local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController) --
-local States                = require(game.ServerScriptService.NPCAIModule.States) -- Server folder
+local StateMachine          = require(script.Parent.Parent.Shared.StateMachine)
+local Config                = require(script.Parent.Parent.Shared.Config)
+local PathfindingController = require(script.Parent.PathfindingController)
+local TargetSystem          = require(script.Parent.TargetSystem)
+local AnimationController   = require(script.Parent.AnimationController)
+local States                = require(script.Parent.States)
 
 local NPCController = {}
 NPCController.__index = NPCController
@@ -123,6 +123,12 @@ function NPCController:_update(dt: number)
 end
 
 function NPCController:_updateLocomotionAnim()
+	-- Animate script handles idle/walk/run/swim/climb automatically.
+	-- We just make sure WalkSpeed is set correctly per state (done in States.lua).
+	-- Nothing else needed here.
+end
+
+function NPCController:_updateLocomotionAnim_DISABLED()
 	local state = self.FSM:GetState()
 
 	-- Don't override action animations
@@ -273,7 +279,7 @@ end
 
 function NPCController:_onDied()
 	self.Pathfinder:Stop()
-	self.Anim:PlayAction("Death")
+	self.Anim:OnDeath()  -- Animate script handles the fall/death anim
 
 	task.delay(5, function()
 		self:Destroy()
