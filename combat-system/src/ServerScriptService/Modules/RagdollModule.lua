@@ -198,15 +198,26 @@ function RagdollModule.Apply(victim: Player, attacker: Player, duration: number,
 		_applyRagdoll(char)
 	end
 
-	-- ── Launch velocity: away from attacker, slight upward arc ────────────────
+	-- ── Launch velocity: pure horizontal push, no upward arc ───────────────────
+	-- Victim slides/stumbles along the ground rather than flying into the air.
+	-- We zero out any existing vertical velocity first so they don't rocket up
+	-- if they were already jumping.
 	if attackerHRP then
 		local launchDir = (victimHRP.Position - attackerHRP.Position)
-		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)  -- flatten
+		launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)  -- fully flattened
 		if launchDir.Magnitude < 0.1 then
-			launchDir = -attackerHRP.CFrame.LookVector  -- fallback: attacker's forward
+			launchDir = -attackerHRP.CFrame.LookVector
+			launchDir = Vector3.new(launchDir.X, 0, launchDir.Z)
 		end
-		launchDir = (launchDir.Unit + Vector3.new(0, 0.45, 0)).Unit
-		victimHRP.AssemblyLinearVelocity = launchDir * launchForce
+		launchDir = launchDir.Unit
+		-- Tiny downward nudge (-0.15) so the body immediately touches the ground
+		-- instead of floating briefly after the motors are disabled
+		local finalVel = Vector3.new(
+			launchDir.X * launchForce,
+			-2,                            -- small downward press, not a spike
+			launchDir.Z * launchForce
+		)
+		victimHRP.AssemblyLinearVelocity = finalVel
 	end
 
 	-- ── Keep stun pinned for the duration ────────────────────────────────────
