@@ -217,4 +217,4 @@ function Scared:Destroy()
 	end
 end
 
-return Scared
+return Scared -- idk
