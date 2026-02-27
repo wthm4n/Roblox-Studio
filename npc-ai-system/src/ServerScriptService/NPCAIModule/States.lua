@@ -1,9 +1,13 @@
 --[[
 	States.lua
 
-	Fix: Chase and Attack states now check entity.Personality:CanEnterCombat()
-	before transitioning. This stops Scared/Passive NPCs from ever entering
-	combat states — no task.defer races, no transition loops, no flood.
+	Clean architecture: This file is the ONLY place FSM:Transition is called.
+	Personalities are queried via:
+	  entity.Personality:CanEnterCombat()  — should we chase/attack?
+	  entity.Personality:ShouldForceFlee() — should we flee regardless of HP?
+	  entity.Personality:GetFleeSpeed()    — personality-specific flee speed
+
+	Personalities never call FSM:Transition themselves. No fighting, no spam.
 --]]
 
 local Config = require(game.ReplicatedStorage.Shared.Config)
@@ -16,6 +20,13 @@ end
 
 local function distanceTo(entity, pos: Vector3): number
 	return (entity.RootPart.Position - pos).Magnitude
+end
+
+-- Shared flee check: HP-based OR personality-forced
+local function shouldFlee(entity): boolean
+	if entity:_shouldFlee() then return true end
+	if entity.Personality:ShouldForceFlee() then return true end
+	return false
 end
 
 -- ─── IDLE ──────────────────────────────────────────────────────────────────
@@ -31,6 +42,11 @@ local Idle = {
 
 	OnUpdate = function(entity, dt)
 		entity._idleTimer += dt
+
+		if shouldFlee(entity) then
+			entity.FSM:Transition("Flee")
+			return
+		end
 
 		if entity.TargetSys.CurrentTarget then
 			if entity.Personality:CanEnterCombat() then
@@ -66,17 +82,17 @@ local Patrol = {
 	end,
 
 	OnUpdate = function(entity, dt)
+		if shouldFlee(entity) then
+			entity.FSM:Transition("Flee")
+			return
+		end
+
 		if entity.TargetSys.CurrentTarget then
 			if entity.Personality:CanEnterCombat() then
 				entity.FSM:Transition("Chase")
 			else
 				entity.FSM:Transition("Flee")
 			end
-			return
-		end
-
-		if entity:_shouldFlee() then
-			entity.FSM:Transition("Flee")
 			return
 		end
 
@@ -101,16 +117,12 @@ local Chase = {
 	Name = "Chase",
 
 	OnEnter = function(entity)
-		if not entity.Personality:CanEnterCombat() then
-			entity.FSM:Transition("Flee")
-			return
-		end
 		setSpeed(entity, Config.Movement.ChaseSpeed)
 		entity._chaseRecalcTimer = 0
 	end,
 
 	OnUpdate = function(entity, dt)
-		if not entity.Personality:CanEnterCombat() then
+		if shouldFlee(entity) then
 			entity.FSM:Transition("Flee")
 			return
 		end
@@ -119,11 +131,6 @@ local Chase = {
 
 		if not target and not lastKnown then
 			entity.FSM:Transition("Idle")
-			return
-		end
-
-		if entity:_shouldFlee() then
-			entity.FSM:Transition("Flee")
 			return
 		end
 
@@ -163,10 +170,6 @@ local Attack = {
 	Name = "Attack",
 
 	OnEnter = function(entity)
-		if not entity.Personality:CanEnterCombat() then
-			entity.FSM:Transition("Flee")
-			return
-		end
 		setSpeed(entity, Config.Movement.WalkSpeed)
 		entity._attackTimer = 0
 		local target = entity.TargetSys.CurrentTarget
@@ -182,7 +185,7 @@ local Attack = {
 	end,
 
 	OnUpdate = function(entity, dt)
-		if not entity.Personality:CanEnterCombat() then
+		if shouldFlee(entity) then
 			entity.FSM:Transition("Flee")
 			return
 		end
@@ -191,11 +194,6 @@ local Attack = {
 
 		if not target or not target.Character then
 			entity.FSM:Transition("Idle")
-			return
-		end
-
-		if entity:_shouldFlee() then
-			entity.FSM:Transition("Flee")
 			return
 		end
 
@@ -228,26 +226,29 @@ local Flee = {
 	Name = "Flee",
 
 	OnEnter = function(entity)
-		setSpeed(entity, Config.Movement.FleeSpeed)
+		-- Use personality flee speed if provided, else default
+		local speed = entity.Personality:GetFleeSpeed() or Config.Movement.FleeSpeed
+		setSpeed(entity, speed)
 		entity._fleeTimer = 0
-		local hum = entity.Humanoid
-		entity._fleeIsHPTriggered = hum and
-			(hum.Health / hum.MaxHealth) < Config.Combat.FleeHealthPercent
 		entity:_beginFlee()
 	end,
 
 	OnUpdate = function(entity, dt)
 		entity._fleeTimer += dt
 
-		-- Only auto-exit Flee if it was triggered by low HP and HP recovered
-		-- Personality-driven Flee (Scared/Passive at full HP) never auto-exits
-		if entity._fleeIsHPTriggered then
-			local hum = entity.Humanoid
-			if hum and hum.Health / hum.MaxHealth >= Config.Combat.FleeHealthPercent + 0.15 then
-				entity._fleeIsHPTriggered = false
-				entity.FSM:Transition("Idle")
-				return
-			end
+		-- Update speed each frame (Scared may change it due to freeze/trip)
+		local speed = entity.Personality:GetFleeSpeed() or Config.Movement.FleeSpeed
+		setSpeed(entity, speed)
+
+		-- Exit Flee only when BOTH conditions are clear:
+		-- 1. HP is no longer critically low
+		-- 2. Personality no longer forcing flee
+		local hpOk = not entity:_shouldFlee()
+		local personalityOk = not entity.Personality:ShouldForceFlee()
+
+		if hpOk and personalityOk then
+			entity.FSM:Transition("Idle")
+			return
 		end
 
 		if entity._fleeTimer >= 3 then
@@ -259,9 +260,10 @@ local Flee = {
 	OnExit = function(entity)
 		entity.Pathfinder:Stop()
 		entity._fleeTimer = 0
-		entity._fleeIsHPTriggered = false
 	end,
 }
+
+-- ─── Export ────────────────────────────────────────────────────────────────
 
 return {
 	Idle   = Idle,
