@@ -116,6 +116,38 @@ CombatSettings.CameraShake = {
 }
 
 -- ══════════════════════════════════════════
+--  STUN SYSTEM
+-- ══════════════════════════════════════════
+CombatSettings.Stun = {
+	-- Stun duration per combo hit index (seconds).
+	-- Each hit REFRESHES the timer, keeping the victim locked in.
+	-- Index 5 = M5 finisher — longer stun since combo is resetting.
+	Duration = {
+		[1] = 0.55,   -- M1 hit
+		[2] = 0.55,   -- M2 hit
+		[3] = 0.60,   -- M3 hit
+		[4] = 0.65,   -- M4 hit
+		[5] = 1.10,   -- M5 finisher
+	},
+
+	-- Tech Roll — the victim's escape option.
+	TechRoll = {
+		-- Key the victim presses to attempt a tech roll (while stunned).
+		-- Enum.KeyCode string: resolved on the client.
+		Key         = "Q",
+		-- Cooldown between tech rolls (seconds). Long enough that it can't be
+		-- used to dodge every single hit, but reachable within a combo if timed well.
+		Cooldown    = 8,
+		-- Velocity applied backward when the roll succeeds (studs/s).
+		LaunchForce = 55,
+		-- Window (seconds from first stun) during which a tech roll IS allowed.
+		-- Outside this window (e.g. the first 0.1s), the roll is ignored so it
+		-- can't be mashed before the hit even registers.
+		EarliestWindow = 0.08,
+	},
+}
+
+-- ══════════════════════════════════════════
 --  REMOTES  (string keys only – actual RemoteEvents live in ReplicatedStorage)
 -- ══════════════════════════════════════════
 CombatSettings.Remotes = {
@@ -123,9 +155,16 @@ CombatSettings.Remotes = {
 	ApplyHitEffect  = "ApplyHitEffect",
 	-- Fired only when a hit actually lands (victim confirmed server-side).
 	-- Payload: (attacker: Player, victim: Player, comboIndex: number)
-	-- Used by the attacker's client to: play hit sound + trigger camera shake.
-	-- Used by ALL clients to: flash the red highlight on the victim.
 	HitConfirm      = "HitConfirm",
+
+	-- Stun remotes
+	-- StunApplied  → FireAllClients(victim: Player, duration: number)
+	-- StunReleased → FireAllClients(victim: Player, reason: string)
+	--                  reason: "expired" | "techroll" | "forced"
+	-- TechRoll     → FireServer() from victim's client (intent only)
+	StunApplied     = "StunApplied",
+	StunReleased    = "StunReleased",
+	TechRoll        = "TechRoll",
 }
 
 return CombatSettings
