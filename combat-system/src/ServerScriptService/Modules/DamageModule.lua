@@ -14,9 +14,10 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 -- ── Lazy deps (set via DamageModule.init) ────────────────────────────────────
-local _remotes:  { [string]: RemoteEvent } = {}
-local _stunModule = nil   -- injected via DamageModule.init
-local _stunDurations: { [number]: number } = {}
+local _remotes:        { [string]: RemoteEvent } = {}
+local _ragdollModule   = nil   -- injected via DamageModule.init
+local _ragdollForces:  { [number]: number } = {}
+local _stunDurations:  { [number]: number } = {}
 
 -- ── Constructor ───────────────────────────────────────────────────────────────
 function DamageModule.new(attacker: Player)
@@ -28,14 +29,16 @@ end
 
 -- ── Module-level init (call once from CombatService) ─────────────────────────
 --[[
-	DamageModule.init(remoteTable, stunModule, stunDurations)
-	  remoteTable   : { ApplyHitEffect, HitConfirm }
-	  stunModule    : StunModule (the require'd module table)
-	  stunDurations : CombatSettings.Stun.Duration table
+	DamageModule.init(remoteTable, ragdollModule, ragdollForces, stunDurations)
+	  remoteTable    : { ApplyHitEffect, HitConfirm }
+	  ragdollModule  : RagdollModule table
+	  ragdollForces  : CombatSettings.Ragdoll.LaunchForce table
+	  stunDurations  : CombatSettings.Stun.Duration table
 ]]
-function DamageModule.init(remoteTable, stunModule, stunDurations)
+function DamageModule.init(remoteTable, ragdollModule, ragdollForces, stunDurations)
 	_remotes       = remoteTable
-	_stunModule    = stunModule
+	_ragdollModule = ragdollModule
+	_ragdollForces = ragdollForces or {}
 	_stunDurations = stunDurations or {}
 end
 
@@ -71,11 +74,13 @@ function DamageModule:Apply(victim: Player, amount: number, comboIndex: number):
 	-- ── Damage ───────────────────────────────────────────────────────────────
 	humanoid:TakeDamage(amount)
 
-	-- ── Stun — apply / refresh ────────────────────────────────────────────────
-	-- Duration is keyed by comboIndex; fall back to index 1 if out of range.
-	if _stunModule then
-		local duration = _stunDurations[comboIndex] or _stunDurations[1] or 0.55
-		_stunModule.Apply(victim, duration)
+	-- ── Ragdoll + Stun — apply / refresh ────────────────────────────────────
+	-- RagdollModule.Apply calls StunModule.Apply internally — one call covers both.
+	-- Each hit refreshes both timers, keeping the victim down.
+	if _ragdollModule then
+		local duration    = _stunDurations[comboIndex] or _stunDurations[1] or 1.0
+		local launchForce = _ragdollForces[comboIndex] or _ragdollForces[1] or 28
+		_ragdollModule.Apply(victim, self._attacker, duration, launchForce)
 	end
 
 	-- ── Hit-reaction animation ────────────────────────────────────────────────
