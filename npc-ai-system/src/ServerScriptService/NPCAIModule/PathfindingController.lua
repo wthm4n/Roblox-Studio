@@ -11,7 +11,7 @@
 
 local PathfindingService = game:GetService("PathfindingService")
 
-local Config = require(script.Parent.Parent.Shared.Config)
+local Config = require(game)
 
 local PathfindingController = {}
 PathfindingController.__index = PathfindingController
