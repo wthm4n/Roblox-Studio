@@ -1,7 +1,14 @@
 --[[
 	NPCController.lua
-	Fixed: removed the FSM.Transition wrapper which caused lock warnings.
-	Personality OnStateChanged is now called safely from _update instead.
+	Fixed:
+	  - _setupDamageTracking no longer calls TargetSys:RegisterThreat directly.
+	    That was the root cause of Passive/Scared chasing — it was writing
+	    nearby players into the threat table even without being hit, which
+	    caused TargetSys to unignore and track them.
+	  - RegisterThreat is now ONLY called by Personality:OnDamaged, so each
+	    personality fully controls whether a threat is registered.
+	  - Passive and Scared never call RegisterThreat, so their TargetSys
+	    stays blind unless the personality explicitly unignores someone.
 --]]
 
 local RunService = game:GetService("RunService")
@@ -67,7 +74,7 @@ function NPCController.new(npc: Model, patrolPoints: { BasePart | Vector3 }?)
 	self._stateLabel  = makeStateLabel(npc)
 	self._connections = {}
 	self._prevTarget  = nil
-	self._prevState   = "Idle"  -- track state changes safely
+	self._prevState   = "Idle"
 
 	self:_setupDamageTracking()
 
@@ -101,14 +108,14 @@ function NPCController:_update(dt: number)
 	self.Pathfinder:Update(dt)
 	self.FSM:Update(dt)
 
-	-- ── Notify personality of state changes (safe — outside FSM lock) ─────
+	-- Notify personality of state changes (safe — outside FSM lock)
 	local currentState = self.FSM:GetState()
 	if currentState ~= self._prevState then
 		self.Personality:OnStateChanged(currentState, self._prevState)
 		self._prevState = currentState
 	end
 
-	-- ── Notify personality of target changes ─────────────────────────────
+	-- Notify personality of target changes
 	local currentTarget = self.TargetSys.CurrentTarget
 	if currentTarget ~= self._prevTarget then
 		if currentTarget then
@@ -119,13 +126,10 @@ function NPCController:_update(dt: number)
 		self._prevTarget = currentTarget
 	end
 
-	-- ── Personality update ────────────────────────────────────────────────
 	self.Personality:OnUpdate(dt)
-
-	-- ── Locomotion anim ───────────────────────────────────────────────────
 	self:_updateLocomotionAnim()
 
-	-- ── Debug label ───────────────────────────────────────────────────────
+	-- Debug label
 	if self._stateLabel then
 		local label = self._stateLabel:FindFirstChildOfClass("TextLabel")
 		if label then
@@ -220,7 +224,10 @@ function NPCController:_setupDamageTracking()
 		local damage = lastHp - newHp
 		lastHp = newHp
 		if damage <= 0 then return end
+
 		self.Anim:PlayAction("Hurt")
+
+		-- Find the closest player to attribute damage to
 		local Players = game:GetService("Players")
 		local closest, closestDist = nil, math.huge
 		for _, player in ipairs(Players:GetPlayers()) do
@@ -228,15 +235,21 @@ function NPCController:_setupDamageTracking()
 			local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
 			if root then
 				local dist = (self.RootPart.Position - root.Position).Magnitude
-				if dist < closestDist then closestDist = dist; closest = player end
+				if dist < closestDist then
+					closestDist = dist
+					closest = player
+				end
 			end
 		end
-		if closest and closestDist < 20 then
-			self.TargetSys:RegisterThreat(closest, damage)
-			self.Personality:OnDamaged(damage, closest)
-		else
-			self.Personality:OnDamaged(damage, nil)
-		end
+
+		-- CRITICAL FIX: Do NOT call TargetSys:RegisterThreat here.
+		-- RegisterThreat writes into _threatTable which causes TargetSys to
+		-- track the player even if they're on the ignore list — because
+		-- _selectBestTarget picks the highest threat regardless of ignore.
+		-- Instead, let Personality:OnDamaged decide whether to register
+		-- a threat. Aggressive will; Passive and Scared will not.
+		local attacker = (closest and closestDist < 20) and closest or nil
+		self.Personality:OnDamaged(damage, attacker)
 	end)
 	table.insert(self._connections, hpConn)
 end
