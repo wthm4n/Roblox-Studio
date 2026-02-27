@@ -272,7 +272,27 @@ RE_StunReleased.OnClientEvent:Connect(function(victim: Player, reason: string)
 end)
 
 -- ═══════════════════════════════════════════════════════════════════════════════
---  TECH ROLL INPUT  (victim presses Q while stunned)
+--  INPUT → INTENT
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+local function _onM1Input()
+	-- Can't attack while stunned (server also gates, avoids the round trip)
+	if _locallyStunned then return end
+
+	local now = os.clock()
+	if now - _lastM1Time < CombatSettings.Cooldowns.M1 then return end
+	_lastM1Time = now
+
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return end
+
+	RE_UsedM1:FireServer()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+--  INPUT LISTENER  (M1 attack + Q tech roll)
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
