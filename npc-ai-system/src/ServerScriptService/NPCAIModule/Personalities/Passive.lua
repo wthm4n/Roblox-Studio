@@ -1,7 +1,7 @@
 --[[
-	Passive.lua - Fixed version
-	Key fix: Uses OnStateChanged to BLOCK Chase/Attack transitions,
-	same pattern as Scared. The old task.defer was losing the race.
+	Passive.lua
+	Overrides CanEnterCombat() = false so States.lua never routes
+	this NPC into Chase or Attack. No task.defer needed.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -22,16 +22,9 @@ function Passive.new(entity: any)
 	return self
 end
 
--- ── CRITICAL FIX: block Chase/Attack at the transition level ──────────────
-function Passive:OnStateChanged(newState: string, oldState: string)
-	if newState == "Chase" or newState == "Attack" then
-		task.defer(function()
-			local current = self.Entity.FSM:GetState()
-			if current == "Chase" or current == "Attack" then
-				self.Entity.FSM:Transition("Flee")
-			end
-		end)
-	end
+-- This is the only gate needed — States.lua checks this before Chase/Attack
+function Passive:CanEnterCombat(): boolean
+	return false
 end
 
 function Passive:OnUpdate(dt: number)
@@ -77,15 +70,6 @@ function Passive:OnUpdate(dt: number)
 			entity.FSM:Transition("Idle")
 		end
 	end
-end
-
-function Passive:OnTargetFound(player: Player)
-	task.defer(function()
-		local state = self.Entity.FSM:GetState()
-		if state == "Chase" or state == "Attack" then
-			self.Entity.FSM:Transition("Flee")
-		end
-	end)
 end
 
 function Passive:OnDamaged(amount: number, attacker: Player?)
