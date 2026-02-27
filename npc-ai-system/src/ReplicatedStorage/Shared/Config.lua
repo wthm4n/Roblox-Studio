@@ -17,7 +17,7 @@ Config.Detection = {
 
 -- ─── Movement ──────────────────────────────────────────────────────────────
 Config.Movement = {
-	WalkSpeed         = 14,
+	WalkSpeed         = 20,
 	ChaseSpeed        = 24,    -- noticeably faster than player (default player = 16)
 	FleeSpeed         = 26,
 	JumpPower         = 50,
