@@ -1,8 +1,7 @@
 --[[
-	Scared.lua - Fixed version
-	Key fix: Scared NPC now BLOCKS the FSM from ever entering Chase/Attack
-	by overriding those transitions at the StateMachine level via OnStateChanged,
-	not just reacting after the fact with task.defer (which was too late).
+	Scared.lua
+	Overrides CanEnterCombat() = false so States.lua never routes
+	this NPC into Chase or Attack. No task.defer needed.
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
@@ -24,24 +23,14 @@ function Scared.new(entity: any)
 	return self
 end
 
--- ── CRITICAL FIX: intercept state transitions before they stick ────────────
-function Scared:OnStateChanged(newState: string, oldState: string)
-	-- Immediately redirect any Chase or Attack back to Flee
-	if newState == "Chase" or newState == "Attack" then
-		-- Use task.defer so we're not calling Transition inside Transition
-		task.defer(function()
-			local current = self.Entity.FSM:GetState()
-			if current == "Chase" or current == "Attack" then
-				self.Entity.FSM:Transition("Flee")
-			end
-		end)
-	end
+-- This is the only gate needed — States.lua checks this before Chase/Attack
+function Scared:CanEnterCombat(): boolean
+	return false
 end
 
 function Scared:OnUpdate(dt: number)
 	local entity = self.Entity
 
-	-- ── Freeze: stop everything ───────────────────────────────────────────
 	if self._frozen then
 		self._freezeTimer -= dt
 		entity.Humanoid.WalkSpeed = 0
@@ -53,7 +42,6 @@ function Scared:OnUpdate(dt: number)
 		return
 	end
 
-	-- ── Tripped: slow movement ────────────────────────────────────────────
 	if self._tripped then
 		self._tripTimer -= dt
 		if self._tripTimer <= 0 then
@@ -71,20 +59,17 @@ function Scared:OnUpdate(dt: number)
 	local nearest, dist = self:_nearestPlayer(rootPos)
 
 	if nearest and dist <= CFG.FleeRadius then
-		-- Make sure we're in Flee state
 		local state = entity.FSM:GetState()
 		if state ~= "Flee" then
 			entity.FSM:Transition("Flee")
 		end
 
-		-- Random freeze chance
 		if not self._frozen and math.random() < CFG.FreezeChance then
 			self._frozen      = true
 			self._freezeTimer = CFG.FreezeDuration
 			return
 		end
 
-		-- Random trip chance
 		if not self._tripped and math.random() < CFG.SlowChance then
 			self._tripped   = true
 			self._tripTimer = CFG.SlowDuration
@@ -93,7 +78,6 @@ function Scared:OnUpdate(dt: number)
 
 		self:_panicFlee(nearest)
 	else
-		-- Player out of range — calm down
 		entity.Humanoid.WalkSpeed = Config.Movement.WalkSpeed
 		if entity.FSM:GetState() == "Flee" then
 			entity.FSM:Transition("Idle")
@@ -101,18 +85,7 @@ function Scared:OnUpdate(dt: number)
 	end
 end
 
-function Scared:OnTargetFound(player: Player)
-	-- Belt-and-suspenders: also catch it here
-	task.defer(function()
-		local state = self.Entity.FSM:GetState()
-		if state == "Chase" or state == "Attack" then
-			self.Entity.FSM:Transition("Flee")
-		end
-	end)
-end
-
 function Scared:OnDamaged(amount: number, attacker: Player?)
-	-- Getting hit = guaranteed short freeze
 	self._frozen      = true
 	self._freezeTimer = 0.8
 	self.Entity.Pathfinder:Stop()
