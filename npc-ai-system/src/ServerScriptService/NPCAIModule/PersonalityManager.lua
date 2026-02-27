@@ -32,9 +32,11 @@ local REGISTRY = {
 
 -- Creates and returns the right personality instance for an NPCController
 function PersonalityManager.create(entity: any): any
-	local personalityName = entity.NPC:GetAttribute("Personality")
-
-	if not personalityName or not REGISTRY[personalityName] then
+    local personalityName = entity.NPC:GetAttribute("Personality")
+    
+    print("[PM DEBUG] NPC:", entity.NPC.Name, "| Personality attribute:", personalityName) -- ADD THIS
+    
+    if not personalityName or not REGISTRY[personalityName] then
 		-- No personality set — return a no-op stub
 		return {
 			Name            = "None",
