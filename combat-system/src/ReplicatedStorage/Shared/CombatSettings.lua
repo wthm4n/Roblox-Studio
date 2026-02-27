@@ -120,31 +120,41 @@ CombatSettings.CameraShake = {
 -- ══════════════════════════════════════════
 CombatSettings.Stun = {
 	-- Stun duration per combo hit index (seconds).
-	-- Each hit REFRESHES the timer, keeping the victim locked in.
-	-- Index 5 = M5 finisher — longer stun since combo is resetting.
+	-- Each hit REFRESHES the timer — victim stays locked for the full window of the NEXT hit.
+	-- These are intentionally long so the ragdoll plays out properly.
+	-- Index 5 = M5 finisher — longest stun, combo resets after it anyway.
 	Duration = {
-		[1] = 0.55,   -- M1 hit
-		[2] = 0.55,   -- M2 hit
-		[3] = 0.60,   -- M3 hit
-		[4] = 0.65,   -- M4 hit
-		[5] = 1.10,   -- M5 finisher
+		[1] = 1.0,    -- M1
+		[2] = 1.0,    -- M2
+		[3] = 1.1,    -- M3
+		[4] = 1.2,    -- M4
+		[5] = 2.0,    -- M5 finisher — full knockdown
 	},
 
 	-- Tech Roll — the victim's escape option.
 	TechRoll = {
-		-- Key the victim presses to attempt a tech roll (while stunned).
-		-- Enum.KeyCode string: resolved on the client.
-		Key         = "Q",
-		-- Cooldown between tech rolls (seconds). Long enough that it can't be
-		-- used to dodge every single hit, but reachable within a combo if timed well.
-		Cooldown    = 8,
-		-- Velocity applied backward when the roll succeeds (studs/s).
-		LaunchForce = 55,
-		-- Window (seconds from first stun) during which a tech roll IS allowed.
-		-- Outside this window (e.g. the first 0.1s), the roll is ignored so it
-		-- can't be mashed before the hit even registers.
-		EarliestWindow = 0.08,
+		Key            = "Q",      -- Enum.KeyCode string, resolved on client
+		Cooldown       = 8,        -- seconds between tech rolls
+		LaunchForce    = 60,       -- backward velocity (studs/s)
+		EarliestWindow = 0.08,     -- ignore input in first N seconds (anti-mash)
 	},
+}
+
+-- ══════════════════════════════════════════
+--  RAGDOLL SYSTEM
+-- ══════════════════════════════════════════
+CombatSettings.Ragdoll = {
+	-- Launch force applied away from attacker on each hit (studs/s).
+	-- Increases with combo depth so later hits feel heavier.
+	LaunchForce = {
+		[1] = 28,    -- M1
+		[2] = 30,    -- M2
+		[3] = 33,    -- M3
+		[4] = 38,    -- M4
+		[5] = 60,    -- M5 finisher — big knockback
+	},
+	-- Ragdoll duration mirrors stun duration (both come from CombatSettings.Stun.Duration).
+	-- Player is in ragdoll state the ENTIRE time they are stunned.
 }
 
 -- ══════════════════════════════════════════
@@ -153,18 +163,18 @@ CombatSettings.Stun = {
 CombatSettings.Remotes = {
 	UsedM1          = "UsedM1",
 	ApplyHitEffect  = "ApplyHitEffect",
-	-- Fired only when a hit actually lands (victim confirmed server-side).
-	-- Payload: (attacker: Player, victim: Player, comboIndex: number)
-	HitConfirm      = "HitConfirm",
+	HitConfirm      = "HitConfirm",   -- (attacker, victim, comboIndex) on confirmed hit
 
-	-- Stun remotes
-	-- StunApplied  → FireAllClients(victim: Player, duration: number)
-	-- StunReleased → FireAllClients(victim: Player, reason: string)
-	--                  reason: "expired" | "techroll" | "forced"
-	-- TechRoll     → FireServer() from victim's client (intent only)
-	StunApplied     = "StunApplied",
-	StunReleased    = "StunReleased",
-	TechRoll        = "TechRoll",
+	-- Stun
+	StunApplied     = "StunApplied",   -- (victim, duration)
+	StunReleased    = "StunReleased",  -- (victim, reason: "expired"|"techroll"|"forced"|"ragdoll_recover")
+	TechRoll        = "TechRoll",      -- FireServer from victim (intent only)
+
+	-- Ragdoll
+	-- Ragdoll    → FireAllClients(victim, true)   — start ragdoll, disable Animate
+	-- RagdollEnd → FireAllClients(victim)         — recover, re-enable Animate
+	Ragdoll         = "Ragdoll",
+	RagdollEnd      = "RagdollEnd",
 }
 
 return CombatSettings
