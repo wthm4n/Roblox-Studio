@@ -1,17 +1,18 @@
 --[[
 	NPCController.lua
 	Main NPC brain — wires together:
-	  StateMachine + PathfindingController + TargetSystem + AnimationController
+	  StateMachine + PathfindingController + TargetSystem + AnimationController + Personality
 --]]
 
 local RunService = game:GetService("RunService")
 
-local StateMachine          = require(game.ReplicatedStorage.Shared.StateMachine) -- ReplicatedStorage.Shared folder
+local StateMachine          = require(game.ReplicatedStorage.Shared.StateMachine)
 local Config                = require(game.ReplicatedStorage.Shared.Config)
-local PathfindingController = require(game.ServerScriptService.NPCAIModule.PathfindingController) -- Server folder
-local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem) -- Server folder
-local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController) --
-local States                = require(game.ServerScriptService.NPCAIModule.States) -- Server folder
+local PathfindingController = require(game.ServerScriptService.NPCAIModule.PathfindingController)
+local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem)
+local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController)
+local States                = require(game.ServerScriptService.NPCAIModule.States)
+local PersonalityManager    = require(game.ServerScriptService.NPCAIModule.Personalities.PersonalityManager)
 
 local NPCController = {}
 NPCController.__index = NPCController
@@ -24,8 +25,8 @@ local function makeStateLabel(npc: Model): BillboardGui?
 	if not root then return nil end
 
 	local gui = Instance.new("BillboardGui")
-	gui.Size = UDim2.new(0, 140, 0, 30)
-	gui.StudsOffset = Vector3.new(0, 3.5, 0)
+	gui.Size = UDim2.new(0, 180, 0, 40)
+	gui.StudsOffset = Vector3.new(0, 4, 0)
 	gui.AlwaysOnTop = false
 
 	local label = Instance.new("TextLabel")
@@ -34,8 +35,8 @@ local function makeStateLabel(npc: Model): BillboardGui?
 	label.TextColor3 = Color3.new(1, 1, 1)
 	label.TextStrokeTransparency = 0
 	label.Font = Enum.Font.GothamBold
-	label.TextSize = 14
-	label.Text = "Idle"
+	label.TextSize = 13
+	label.Text = "..."
 	label.Parent = gui
 
 	gui.Parent = root
@@ -51,19 +52,22 @@ function NPCController.new(npc: Model, patrolPoints: { BasePart | Vector3 }?)
 	self.Humanoid   = npc:FindFirstChildOfClass("Humanoid") :: Humanoid
 	self.RootPart   = npc:FindFirstChild("HumanoidRootPart") :: BasePart
 
-	assert(self.Humanoid,  "[NPCController] No Humanoid in "        .. npc.Name)
+	assert(self.Humanoid,  "[NPCController] No Humanoid in "         .. npc.Name)
 	assert(self.RootPart,  "[NPCController] No HumanoidRootPart in " .. npc.Name)
 
-	-- Sub-systems
+	-- Core sub-systems
 	self.Pathfinder = PathfindingController.new(npc)
 	self.TargetSys  = TargetSystem.new(npc)
-	self.Anim       = AnimationController.new(npc)   -- ← NEW
+	self.Anim       = AnimationController.new(npc)
+
+	-- Personality layer (created AFTER core systems so it can reference them)
+	self.Personality = PersonalityManager.create(self)
 
 	-- Patrol
 	self._patrolPoints = patrolPoints or {}
 	self._patrolIndex  = 1
 
-	-- FSM
+	-- Hook FSM so personality gets state change callbacks
 	self.FSM = StateMachine.new(self, {
 		Idle   = States.Idle,
 		Patrol = States.Patrol,
@@ -72,8 +76,17 @@ function NPCController.new(npc: Model, patrolPoints: { BasePart | Vector3 }?)
 		Flee   = States.Flee,
 	}, "Idle")
 
+	-- Wrap FSM transition to notify personality
+	local originalTransition = self.FSM.Transition
+	self.FSM.Transition = function(fsm, newState)
+		local oldState = fsm:GetState()
+		originalTransition(fsm, newState)
+		self.Personality:OnStateChanged(newState, oldState)
+	end
+
 	self._stateLabel  = makeStateLabel(npc)
 	self._connections = {}
+	self._prevTarget  = nil
 
 	self:_setupDamageTracking()
 
@@ -98,6 +111,7 @@ function NPCController:Destroy()
 	self.Pathfinder:Destroy()
 	self.TargetSys:Destroy()
 	self.Anim:Destroy()
+	self.Personality:Destroy()
 	if self._stateLabel then self._stateLabel:Destroy() end
 end
 
@@ -106,30 +120,48 @@ end
 function NPCController:_update(dt: number)
 	if not self.NPC.Parent then self:Destroy() return end
 
+	-- Core systems
 	self.TargetSys:Update(dt)
 	self.Pathfinder:Update(dt)
 	self.FSM:Update(dt)
 
-	-- ── Auto locomotion animation based on speed ──────────────────────
+	-- Notify personality of target changes
+	local currentTarget = self.TargetSys.CurrentTarget
+	if currentTarget ~= self._prevTarget then
+		if currentTarget then
+			self.Personality:OnTargetFound(currentTarget)
+		else
+			self.Personality:OnTargetLost()
+		end
+		self._prevTarget = currentTarget
+	end
+
+	-- Personality gets its own update tick
+	self.Personality:OnUpdate(dt)
+
+	-- Locomotion animation
 	self:_updateLocomotionAnim()
 
-	-- ── Debug label ───────────────────────────────────────────────────
+	-- Debug label
 	if self._stateLabel then
 		local label = self._stateLabel:FindFirstChildOfClass("TextLabel")
 		if label then
-			label.Text = "[ " .. self.FSM:GetState() .. " ]"
+			local personality = self.Personality.Name ~= "None"
+				and (" [" .. self.Personality.Name .. "]") or ""
+			local role = self.NPC:GetAttribute("TacticalRole")
+			local roleStr = role and (" · " .. role) or ""
+			label.Text = self.FSM:GetState() .. personality .. roleStr
 		end
 	end
 end
 
 function NPCController:_updateLocomotionAnim()
 	local state = self.FSM:GetState()
-	if state == "Attack" then return end -- action anim takes over
+	if state == "Attack" then return end
 
 	local vel   = self.RootPart.AssemblyLinearVelocity
 	local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
 
-	-- Simple water check: below Y=0 and no ground above
 	local waterResult = workspace:Raycast(self.RootPart.Position, Vector3.new(0, 3, 0))
 	local inWater = (self.RootPart.Position.Y < 0) and (waterResult == nil)
 
@@ -155,20 +187,16 @@ function NPCController:_performAttack(target: Player)
 	local hum = target.Character:FindFirstChildOfClass("Humanoid") :: Humanoid
 	if not hum or hum.Health <= 0 then return end
 
-	-- Play attack animation, deal damage when it hits mid-swing
 	local track = self.Anim:PlayAction("Attack")
 	if track then
-		-- Deal damage at the halfway point of the animation
 		local halfTime = track.Length * 0.4
 		if halfTime <= 0 then halfTime = 0.3 end
-
 		task.delay(halfTime, function()
 			if hum and hum.Health > 0 then
 				hum:TakeDamage(Config.Combat.Damage)
 			end
 		end)
 	else
-		-- No animation — damage immediately
 		hum:TakeDamage(Config.Combat.Damage)
 	end
 end
@@ -194,9 +222,7 @@ function NPCController:_beginNextPatrol()
 		dest = point.Position
 	elseif typeof(point) == "Vector3" then
 		dest = point
-	else
-		return
-	end
+	else return end
 
 	self.Pathfinder:MoveTo(dest, function()
 		self._patrolWaiting   = true
@@ -216,8 +242,7 @@ function NPCController:_beginFlee()
 		end
 	end
 
-	local fleePos = self.RootPart.Position + awayDir * Config.Patrol.WanderRadius
-	self.Pathfinder:MoveTo(fleePos)
+	self.Pathfinder:MoveTo(self.RootPart.Position + awayDir * Config.Patrol.WanderRadius)
 end
 
 -- ─── Damage tracking ───────────────────────────────────────────────────────
@@ -229,31 +254,27 @@ function NPCController:_setupDamageTracking()
 		local newHp  = self.Humanoid.Health
 		local damage = lastHp - newHp
 		lastHp = newHp
-
 		if damage <= 0 then return end
 
-		-- Play hurt animation (doesn't interrupt locomotion for long)
 		self.Anim:PlayAction("Hurt")
 
-		-- Attribute threat to nearest player
+		-- Find attacker
 		local Players     = game:GetService("Players")
-		local closest     = nil
-		local closestDist = math.huge
-
+		local closest, closestDist = nil, math.huge
 		for _, player in ipairs(Players:GetPlayers()) do
 			local char = player.Character
 			local root = char and char:FindFirstChild("HumanoidRootPart") :: BasePart
 			if root then
 				local dist = (self.RootPart.Position - root.Position).Magnitude
-				if dist < closestDist then
-					closestDist = dist
-					closest     = player
-				end
+				if dist < closestDist then closestDist = dist; closest = player end
 			end
 		end
 
 		if closest and closestDist < 20 then
 			self.TargetSys:RegisterThreat(closest, damage)
+			self.Personality:OnDamaged(damage, closest)  -- ← notify personality
+		else
+			self.Personality:OnDamaged(damage, nil)
 		end
 	end)
 
@@ -264,11 +285,8 @@ end
 
 function NPCController:_onDied()
 	self.Pathfinder:Stop()
-	self.Anim:OnDeath()  -- Animate script handles the fall/death anim
-
-	task.delay(5, function()
-		self:Destroy()
-	end)
+	self.Anim:OnDeath()
+	task.delay(5, function() self:Destroy() end)
 end
 
 return NPCController
