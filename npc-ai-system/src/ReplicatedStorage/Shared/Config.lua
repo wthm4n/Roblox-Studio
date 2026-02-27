@@ -24,7 +24,7 @@ Config.Movement = {
 	PathRecalcDelay   = 0.2,   -- recalc path twice as often for tighter tracking
 	StuckTimeout      = 1.2,   -- catch stuck faster   -- detect stuck faster
 	StuckThreshold    = 0.8,   -- lower = more sensitive to not moving   -- studs moved; below this = possibly stuck
-	WaypointReachDist = 1.5,   -- tighter = better cornering around walls     -- studs; close enough to advance to next waypoint
+	WaypointReachDist = 3,   -- tighter = better cornering around walls     -- studs; close enough to advance to next waypoint
 }
 
 -- ─── Combat ────────────────────────────────────────────────────────────────
