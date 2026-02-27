@@ -24,6 +24,7 @@ local Shared           = ReplicatedStorage:WaitForChild("Shared")
 local AbilityController = require(Modules:WaitForChild("AbilityController"))
 local HitboxModule      = require(Modules:WaitForChild("HitboxModule"))
 local DamageModule      = require(Modules:WaitForChild("DamageModule"))
+local StunModule        = require(Modules:WaitForChild("StunModule"))
 local CombatSettings    = require(Shared:WaitForChild("CombatSettings"))
 
 -- ── Remotes setup ─────────────────────────────────────────────────────────────
@@ -38,12 +39,22 @@ end
 local RE_UsedM1         = _getRemote(CombatSettings.Remotes.UsedM1)
 local RE_ApplyHitEffect = _getRemote(CombatSettings.Remotes.ApplyHitEffect)
 local RE_HitConfirm     = _getRemote(CombatSettings.Remotes.HitConfirm)
+local RE_StunApplied    = _getRemote(CombatSettings.Remotes.StunApplied)
+local RE_StunReleased   = _getRemote(CombatSettings.Remotes.StunReleased)
+local RE_TechRoll       = _getRemote(CombatSettings.Remotes.TechRoll)
 
--- Initialise DamageModule with the remotes it needs
-DamageModule.init({
-	ApplyHitEffect = RE_ApplyHitEffect,
-	HitConfirm     = RE_HitConfirm,
-})
+-- Initialise StunModule first (DamageModule depends on it)
+StunModule.init(
+	{ StunApplied = RE_StunApplied, StunReleased = RE_StunReleased, TechRoll = RE_TechRoll },
+	CombatSettings.Stun
+)
+
+-- Initialise DamageModule with remotes + stun dependency
+DamageModule.init(
+	{ ApplyHitEffect = RE_ApplyHitEffect, HitConfirm = RE_HitConfirm },
+	StunModule,
+	CombatSettings.Stun.Duration
+)
 
 -- ── Per-player state ──────────────────────────────────────────────────────────
 type PlayerCombatState = {
@@ -146,7 +157,11 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	-- ── 1. Cooldown gate ────────────────────────────────────────────────────
 	local canUse, reason = controller:CanUse("M1")
 	if not canUse then
-		-- Optionally log anti-cheat: warn("M1 blocked:", attacker.Name, reason)
+		return
+	end
+
+	-- ── 1b. Stun gate — stunned players cannot attack ────────────────────────
+	if StunModule.IsStunned(attacker) then
 		return
 	end
 
