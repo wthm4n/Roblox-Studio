@@ -321,8 +321,7 @@ function NPCController:_createConeParts()
 		w.CanCollide  = false
 		w.CastShadow  = false
 		w.Material    = Enum.Material.Neon
-		w.Transparency = 0.8
-		w.Color = Color3.fromRGB(255, 0, 0)
+		w.Transparency = 0.72
 		w.Size         = Vector3.new(0.1, 0.1, 0.1)
 		w.Parent       = sub
 		table.insert(parts, w)
