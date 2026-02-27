@@ -12,7 +12,7 @@ local PathfindingController = require(game.ServerScriptService.NPCAIModule.Pathf
 local TargetSystem          = require(game.ServerScriptService.NPCAIModule.TargetSystem)
 local AnimationController   = require(game.ServerScriptService.NPCAIModule.AnimationController)
 local States                = require(game.ServerScriptService.NPCAIModule.States)
-local PersonalityManager    = require(game.ServerScriptService.NPCAIModule.Personalities.PersonalityManager)
+local PersonalityManager    = require(game.ServerScriptService.NPCAIModule.PersonalityManager)
 
 local NPCController = {}
 NPCController.__index = NPCController
