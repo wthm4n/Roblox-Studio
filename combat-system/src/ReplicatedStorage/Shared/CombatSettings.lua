@@ -116,45 +116,45 @@ CombatSettings.CameraShake = {
 }
 
 -- ══════════════════════════════════════════
---  STUN SYSTEM
+--  STUN SYSTEM  (hits 1-3 only — no ragdoll, just movement lock)
 -- ══════════════════════════════════════════
 CombatSettings.Stun = {
-	-- Stun duration per combo hit index (seconds).
-	-- Each hit REFRESHES the timer — victim stays locked for the full window of the NEXT hit.
-	-- These are intentionally long so the ragdoll plays out properly.
-	-- Index 5 = M5 finisher — longest stun, combo resets after it anyway.
+	-- Duration the victim is movement-locked after each non-ragdoll hit (seconds).
+	-- Long enough so attacker can land the next punch before victim walks away.
 	Duration = {
-		[1] = 1.0,    -- M1
-		[2] = 1.0,    -- M2
-		[3] = 1.1,    -- M3
-		[4] = 1.2,    -- M4
-		[5] = 2.0,    -- M5 finisher — full knockdown
+		[1] = 0.7,    -- M1
+		[2] = 0.7,    -- M2
+		[3] = 0.75,   -- M3
+		-- M4 and M5 use ragdoll — their stun is set by Ragdoll.Duration below
 	},
 
-	-- Tech Roll — the victim's escape option.
+	-- Tech Roll escape (works during RAGDOLL, not regular stun)
 	TechRoll = {
-		Key            = "Q",      -- Enum.KeyCode string, resolved on client
-		Cooldown       = 8,        -- seconds between tech rolls
-		LaunchForce    = 60,       -- backward velocity (studs/s)
-		EarliestWindow = 0.08,     -- ignore input in first N seconds (anti-mash)
+		Key            = "Q",
+		Cooldown       = 8,
+		LaunchForce    = 60,
+		EarliestWindow = 0.08,
 	},
 }
 
 -- ══════════════════════════════════════════
---  RAGDOLL SYSTEM
+--  RAGDOLL SYSTEM  (last hit of combo only: M4 / M5 finisher)
 -- ══════════════════════════════════════════
 CombatSettings.Ragdoll = {
-	-- Launch force applied away from attacker on each hit (studs/s).
-	-- Increases with combo depth so later hits feel heavier.
+	-- Horizontal launch force (studs/s). Pure backward — NO upward component.
+	-- Victim slides/stumbles along the ground rather than flying into the air.
 	LaunchForce = {
-		[1] = 28,    -- M1
-		[2] = 30,    -- M2
-		[3] = 33,    -- M3
-		[4] = 38,    -- M4
-		[5] = 60,    -- M5 finisher — big knockback
+		[4] = 42,    -- M4 combo ender
+		[5] = 65,    -- M5 finisher
 	},
-	-- Ragdoll duration mirrors stun duration (both come from CombatSettings.Stun.Duration).
-	-- Player is in ragdoll state the ENTIRE time they are stunned.
+	-- How long they stay ragdolled (seconds).
+	Duration = {
+		[4] = 1.4,   -- M4
+		[5] = 2.2,   -- M5 finisher
+	},
+	-- Which combo indices trigger a ragdoll. Everything else gets stun-only.
+	-- MaxHits = 4, so hit 4 is the combo ender. Hit 5 is the finisher loop.
+	TriggerOnHit = { [4] = true, [5] = true },
 }
 
 -- ══════════════════════════════════════════
