@@ -25,6 +25,7 @@ local AbilityController = require(Modules:WaitForChild("AbilityController"))
 local HitboxModule      = require(Modules:WaitForChild("HitboxModule"))
 local DamageModule      = require(Modules:WaitForChild("DamageModule"))
 local StunModule        = require(Modules:WaitForChild("StunModule"))
+local RagdollModule     = require(Modules:WaitForChild("RagdollModule"))
 local CombatSettings    = require(Shared:WaitForChild("CombatSettings"))
 
 -- ── Remotes setup ─────────────────────────────────────────────────────────────
@@ -42,17 +43,26 @@ local RE_HitConfirm     = _getRemote(CombatSettings.Remotes.HitConfirm)
 local RE_StunApplied    = _getRemote(CombatSettings.Remotes.StunApplied)
 local RE_StunReleased   = _getRemote(CombatSettings.Remotes.StunReleased)
 local RE_TechRoll       = _getRemote(CombatSettings.Remotes.TechRoll)
+local RE_Ragdoll        = _getRemote(CombatSettings.Remotes.Ragdoll)
+local RE_RagdollEnd     = _getRemote(CombatSettings.Remotes.RagdollEnd)
 
--- Initialise StunModule first (DamageModule depends on it)
+-- Initialise StunModule first (RagdollModule depends on it)
 StunModule.init(
 	{ StunApplied = RE_StunApplied, StunReleased = RE_StunReleased, TechRoll = RE_TechRoll },
 	CombatSettings.Stun
 )
 
--- Initialise DamageModule with remotes + stun dependency
+-- Initialise RagdollModule (depends on StunModule)
+RagdollModule.init(
+	{ Ragdoll = RE_Ragdoll, RagdollEnd = RE_RagdollEnd },
+	StunModule
+)
+
+-- Initialise DamageModule — now uses RagdollModule which handles stun internally
 DamageModule.init(
 	{ ApplyHitEffect = RE_ApplyHitEffect, HitConfirm = RE_HitConfirm },
-	StunModule,
+	RagdollModule,
+	CombatSettings.Ragdoll.LaunchForce,
 	CombatSettings.Stun.Duration
 )
 
@@ -160,8 +170,8 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 		return
 	end
 
-	-- ── 1b. Stun gate — stunned players cannot attack ────────────────────────
-	if StunModule.IsStunned(attacker) then
+	-- ── 1b. Stun / ragdoll gate — locked players cannot attack ────────────────
+	if StunModule.IsStunned(attacker) or RagdollModule.IsRagdolled(attacker) then
 		return
 	end
 
