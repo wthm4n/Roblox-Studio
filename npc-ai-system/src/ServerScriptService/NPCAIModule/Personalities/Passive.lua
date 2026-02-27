@@ -2,77 +2,96 @@
 	Passive.lua
 
 	Behavior:
-	  - Roams/patrols normally, completely ignores players proximity
-	  - ShouldForceFlee() always returns false unless attacked
-	  - OnDamaged: flee from attacker for a short time, then resume patrol
-	  - Never attacks back (CanEnterCombat = false)
+	  - Patrols and ignores all players by default
+	  - ONLY reacts when directly attacked
+	  - On attacked: flees from attacker for FLEE_DURATION seconds
+	  - Never chases, never attacks back
+	  - After flee timer expires: forgets attacker, resumes ignoring everyone
 --]]
 
 local PersonalityBase = require(script.Parent.PersonalityBase)
 local Config          = require(game.ReplicatedStorage.Shared.Config)
+local Players         = game:GetService("Players")
 
 local Passive = setmetatable({}, { __index = PersonalityBase })
 Passive.__index = Passive
 
-local CFG = Config.Passive
-
--- How long the NPC flees after being hit before calming down
+local CFG           = Config.Passive
 local FLEE_DURATION = 6
 
 function Passive.new(entity: any)
 	local self = setmetatable(PersonalityBase.new(entity, CFG), Passive)
-	self.Name          = "Passive"
-	self._fleeTimer    = 0       -- counts down after being hit
-	self._isProvoked   = false   -- true only while flee timer is active
-	self._attacker     = nil     -- who hit us
+	self.Name        = "Passive"
+	self._fleeTimer  = 0
+	self._isProvoked = false
+	self._attacker   = nil
+
+	-- Ignore everyone at spawn — passive NPCs are completely unaware of players
+	entity.TargetSys:IgnoreAll()
+
+	-- Also ignore players who join mid-session
+	self._playerAddedConn = Players.PlayerAdded:Connect(function(player)
+		if not self._isProvoked then
+			entity.TargetSys:IgnorePlayer(player)
+		end
+	end)
+
 	return self
 end
 
 -- ── Questions States.lua asks ──────────────────────────────────────────────
 
 function Passive:CanEnterCombat(): boolean
-	return false  -- never attacks, ever
+	return false  -- never chases or attacks, ever
 end
 
 function Passive:ShouldForceFlee(): boolean
-	return self._isProvoked  -- only true after being hit
+	return self._isProvoked
 end
 
 function Passive:GetFleeSpeed(): number?
 	return CFG.FleeSpeed
 end
 
--- ── Internal update ────────────────────────────────────────────────────────
+-- ── Lifecycle ─────────────────────────────────────────────────────────────
 
 function Passive:OnUpdate(dt: number)
 	if not self._isProvoked then return end
 
-	-- Count down flee timer
 	self._fleeTimer -= dt
 	if self._fleeTimer <= 0 then
 		self._isProvoked = false
 		self._attacker   = nil
+
+		-- Re-ignore everyone and wipe target so FSM exits Flee cleanly
+		self.Entity.TargetSys:IgnoreAll()
+		self.Entity.TargetSys:ClearTarget()
 	end
 end
 
 function Passive:OnDamaged(amount: number, attacker: Player?)
-	-- Being hit is the ONLY trigger for flee behavior
 	self._isProvoked = true
 	self._fleeTimer  = FLEE_DURATION
 	self._attacker   = attacker
 
-	-- Immediately path away from attacker
 	if attacker then
-		local entity = self.Entity
-		local pRoot  = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart") :: BasePart
-		if pRoot then
-			local away = (entity.RootPart.Position - pRoot.Position).Unit
-			entity.Humanoid.WalkSpeed = CFG.FleeSpeed
-			entity.Pathfinder:MoveTo(entity.RootPart.Position + away * CFG.FleeRadius)
-		end
+		-- Unignore ONLY the attacker so TargetSys picks them up
+		-- This gives _beginFlee a direction to run away from
+		self.Entity.TargetSys:UnignorePlayer(attacker)
 	end
+
+	-- No Pathfinder call here — Flee state OnEnter calls _beginFlee
 end
 
-function Passive:Destroy() end
+function Passive:OnStateChanged(newState: string, oldState: string) end
+function Passive:OnTargetFound(target: Player) end
+function Passive:OnTargetLost() end
+
+function Passive:Destroy()
+	if self._playerAddedConn then
+		self._playerAddedConn:Disconnect()
+		self._playerAddedConn = nil
+	end
+end
 
 return Passive
