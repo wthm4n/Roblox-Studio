@@ -37,7 +37,6 @@ local STATE = {
 	WALLRUN = "WallRun",
 }
 
--- Note: _bufferDir stored as separate table to avoid Luau strict field errors
 local _bufferDirs: { [Player]: string } = {}
 
 type PlayerState = {
@@ -104,21 +103,17 @@ local function _flatSpeed(hrp: BasePart): number
 	return Vector3.new(v.X, 0, v.Z).Magnitude
 end
 
+-- FIX 1: Safe flatten — if looking straight down, LookVector XZ is near zero
+-- which caused .Unit to produce NaN and the dash went nowhere.
 local function _dashDir(hrp: BasePart, dir: string): Vector3
-	local lk = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z).Unit
-	local rt = Vector3.new(hrp.CFrame.RightVector.X, 0, hrp.CFrame.RightVector.Z).Unit
-	if dir == "Forward" then
-		return lk
-	end
-	if dir == "Backward" then
-		return -lk
-	end
-	if dir == "Left" then
-		return -rt
-	end
-	if dir == "Right" then
-		return rt
-	end
+	local lkRaw = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
+	local lk = lkRaw.Magnitude > 0.01 and lkRaw.Unit or Vector3.new(0, 0, -1)
+	local rtRaw = Vector3.new(hrp.CFrame.RightVector.X, 0, hrp.CFrame.RightVector.Z)
+	local rt = rtRaw.Magnitude > 0.01 and rtRaw.Unit or Vector3.new(1, 0, 0)
+	if dir == "Forward"  then return lk  end
+	if dir == "Backward" then return -lk end
+	if dir == "Left"     then return -rt end
+	if dir == "Right"    then return rt  end
 	return lk
 end
 
@@ -147,12 +142,8 @@ local function _applyBurst(hrp: BasePart, vel: Vector3, duration: number, tag: s
 	lv.Parent = hrp
 
 	task.delay(duration, function()
-		if att and att.Parent then
-			att:Destroy()
-		end
-		if lv and lv.Parent then
-			lv:Destroy()
-		end
+		if att and att.Parent then att:Destroy() end
+		if lv and lv.Parent then lv:Destroy() end
 	end)
 end
 
@@ -161,7 +152,7 @@ local function _addEnergy(s: PlayerState, amount: number)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  PUBLIC: iFrame check  (DamageModule calls this)
+--  PUBLIC: iFrame check
 -- ══════════════════════════════════════════════════════════════════════════════
 
 function MovementService.IsIFramed(player: Player): boolean
@@ -170,13 +161,11 @@ function MovementService.IsIFramed(player: Player): boolean
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  SLIDE  (defined first — Dash needs _endSlide)
+--  SLIDE
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _endSlide(player: Player, s: PlayerState)
-	if not s.SlideActive then
-		return
-	end
+	if not s.SlideActive then return end
 	s.SlideActive = false
 
 	if s.SlideTimer then
@@ -185,9 +174,7 @@ local function _endSlide(player: Player, s: PlayerState)
 	end
 
 	local hrp = _getHRP(player)
-	if hrp then
-		_removeConstraints(hrp, "Slide")
-	end
+	if hrp then _removeConstraints(hrp, "Slide") end
 
 	local hum = _getHumanoid(player)
 	if hum then
@@ -201,29 +188,17 @@ local function _endSlide(player: Player, s: PlayerState)
 end
 
 local function _startSlide(player: Player, s: PlayerState)
-	if s.SlideActive then
-		return
-	end
-	if _stunModule and _stunModule.IsStunned(player) then
-		return
-	end
-	if _ragdollModule and _ragdollModule.IsRagdolled(player) then
-		return
-	end
+	if s.SlideActive then return end
+	if _stunModule and _stunModule.IsStunned(player) then return end
+	if _ragdollModule and _ragdollModule.IsRagdolled(player) then return end
 
 	local hum = _getHumanoid(player)
 	local hrp = _getHRP(player)
-	if not hum or not hrp or hum.Health <= 0 then
-		return
-	end
-	if not _isGrounded(hum) then
-		return
-	end
+	if not hum or not hrp or hum.Health <= 0 then return end
+	if not _isGrounded(hum) then return end
 
 	local speed = _flatSpeed(hrp)
-	if speed < 6 then
-		return
-	end
+	if speed < 6 then return end
 
 	local entrySpeed = math.clamp(speed * SC.SpeedMult, SC.SpeedMin, SC.SpeedMax)
 	s.SlideActive = true
@@ -232,7 +207,6 @@ local function _startSlide(player: Player, s: PlayerState)
 	hum.HipHeight = SC.CrouchHipHeight
 	hum.WalkSpeed = entrySpeed
 
-	-- Drive initial burst in look direction
 	local look = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z).Unit
 	_applyBurst(hrp, look * entrySpeed, SC.FrictionInterval * 2, "Slide")
 
@@ -240,43 +214,28 @@ local function _startSlide(player: Player, s: PlayerState)
 		_remotes.SlideStart:FireAllClients(player)
 	end
 
-	-- Hard max duration
 	s.SlideTimer = task.delay(SC.MaxDuration, function()
 		local cs = _states[player]
-		if cs and cs.SlideActive then
-			_endSlide(player, cs)
-		end
+		if cs and cs.SlideActive then _endSlide(player, cs) end
 	end)
 end
 
 local function _tickSlide(player: Player, s: PlayerState, dt: number)
-	if not s.SlideActive then
-		return
-	end
+	if not s.SlideActive then return end
 
 	local hum = _getHumanoid(player)
 	local hrp = _getHRP(player)
-	if not hum or not hrp then
-		_endSlide(player, s)
-		return
-	end
+	if not hum or not hrp then _endSlide(player, s) return end
+	if not _isGrounded(hum) then _endSlide(player, s) return end
 
-	if not _isGrounded(hum) then
-		_endSlide(player, s)
-		return
-	end
-
-	-- Exponential friction
 	s.SlideSpeed = s.SlideSpeed * (SC.FrictionMult ^ (dt / SC.FrictionInterval))
 	hum.WalkSpeed = math.max(s.SlideSpeed, 0)
 
-	if s.SlideSpeed <= SC.EndSpeed then
-		_endSlide(player, s)
-	end
+	if s.SlideSpeed <= SC.EndSpeed then _endSlide(player, s) end
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  WALL RUN  (defined before Dash because wall jump is called from Heartbeat)
+--  WALL RUN
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _castWallRays(hrp: BasePart, side: string): (boolean, Vector3)
@@ -300,9 +259,7 @@ local function _castWallRays(hrp: BasePart, side: string): (boolean, Vector3)
 end
 
 local function _endWallRun(player: Player, s: PlayerState)
-	if not s.WallActive then
-		return
-	end
+	if not s.WallActive then return end
 	s.WallActive = false
 
 	local hrp = _getHRP(player)
@@ -321,9 +278,7 @@ end
 
 local function _startWallRun(player: Player, s: PlayerState, side: string, normal: Vector3)
 	local hrp = _getHRP(player)
-	if not hrp then
-		return
-	end
+	if not hrp then return end
 
 	_removeConstraints(hrp, "WallRun")
 
@@ -334,7 +289,6 @@ local function _startWallRun(player: Player, s: PlayerState, side: string, norma
 	s.WallStartTime = now
 	s.WallLastSeen = now
 
-	-- Entry speed from current velocity projected onto wall plane
 	local vel = hrp.AssemblyLinearVelocity
 	local look = hrp.CFrame.LookVector
 	local wallFwd = look - normal * look:Dot(normal)
@@ -354,7 +308,6 @@ local function _startWallRun(player: Player, s: PlayerState, side: string, norma
 	lv.VectorVelocity = wallFwd * entrySpd
 	lv.Parent = hrp
 
-	-- Partial gravity cancel — player drifts down naturally
 	local vf = Instance.new("VectorForce")
 	vf.Name = "WallRunVF"
 	vf.Attachment0 = att
@@ -362,7 +315,6 @@ local function _startWallRun(player: Player, s: PlayerState, side: string, norma
 	vf.RelativeTo = Enum.ActuatorRelativeTo.World
 	vf.Parent = hrp
 
-	-- Body tilt
 	local tiltAngle = math.rad(WC.TiltAngle) * (side == "Right" and 1 or -1)
 	hrp.CFrame = hrp.CFrame * CFrame.Angles(0, 0, -tiltAngle)
 
@@ -374,15 +326,11 @@ end
 local function _tickWallRun(player: Player, s: PlayerState, dt: number)
 	local hrp = _getHRP(player)
 	local hum = _getHumanoid(player)
-	if not hrp or not hum then
-		_endWallRun(player, s)
-		return
-	end
+	if not hrp or not hum then _endWallRun(player, s) return end
 
 	local now = os.clock()
 
-	if
-		_isGrounded(hum)
+	if _isGrounded(hum)
 		or now - s.WallStartTime >= WC.MaxDuration
 		or (_stunModule and _stunModule.IsStunned(player))
 		or (_ragdollModule and _ragdollModule.IsRagdolled(player))
@@ -391,7 +339,6 @@ local function _tickWallRun(player: Player, s: PlayerState, dt: number)
 		return
 	end
 
-	-- Confirm wall still present (coyote time if briefly missing)
 	local wallStill, newNormal = _castWallRays(hrp, s.WallSide)
 	if wallStill then
 		s.WallNormal = newNormal
@@ -401,12 +348,10 @@ local function _tickWallRun(player: Player, s: PlayerState, dt: number)
 		return
 	end
 
-	-- Speed ramp over WC.RampTime seconds
 	local timeOn = now - s.WallStartTime
 	local rampFrac = math.min(timeOn / WC.RampTime, 1)
 	local rampAdd = rampFrac * WC.RampAdd
 
-	-- Re-project look vector onto wall plane each tick (turning support)
 	local look = hrp.CFrame.LookVector
 	local wallFwd = look - s.WallNormal * look:Dot(s.WallNormal)
 	if wallFwd.Magnitude > 0.01 then
@@ -417,38 +362,28 @@ local function _tickWallRun(player: Player, s: PlayerState, dt: number)
 		end
 	end
 
-	-- Energy gain while wall running
 	_addEnergy(s, MC.WallRunGain * dt)
 end
 
 local function _tryAttachWallRun(player: Player, s: PlayerState)
-	if s.WallActive or s.SlideActive then
-		return
-	end
+	if s.WallActive or s.SlideActive then return end
 
 	local hrp = _getHRP(player)
 	local hum = _getHumanoid(player)
-	if not hrp or not hum or hum.Health <= 0 then
-		return
-	end
+	if not hrp or not hum or hum.Health <= 0 then return end
 
 	if _isGrounded(hum) then
 		s.AirTime = os.clock()
 		return
 	end
 
-	if os.clock() - s.AirTime < WC.MinAirTime then
-		return
-	end
+	if os.clock() - s.AirTime < WC.MinAirTime then return end
 
-	-- Require roughly forward movement
 	local vel = hrp.AssemblyLinearVelocity
 	local flatVel = Vector3.new(vel.X, 0, vel.Z)
 	local flatLook = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
 	if flatVel.Magnitude > 1 and flatLook.Magnitude > 0.01 then
-		if flatVel.Unit:Dot(flatLook.Unit) < WC.MinForwardDot then
-			return
-		end
+		if flatVel.Unit:Dot(flatLook.Unit) < WC.MinForwardDot then return end
 	end
 
 	for _, side in ipairs({ "Left", "Right" }) do
@@ -461,20 +396,15 @@ local function _tryAttachWallRun(player: Player, s: PlayerState)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  DASH  (defined after _endSlide and _endWallRun)
+--  DASH
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _executeDash(player: Player, s: PlayerState, direction: string)
 	local hrp = _getHRP(player)
 	local hum = _getHumanoid(player)
-	if not hrp or not hum or hum.Health <= 0 then
-		return
-	end
+	if not hrp or not hum or hum.Health <= 0 then return end
 
-	-- Cancel slide if active
-	if s.SlideActive then
-		_endSlide(player, s)
-	end
+	if s.SlideActive then _endSlide(player, s) end
 
 	local now = os.clock()
 	local speed = DC.BaseSpeed + s.Energy * DC.EnergyScale
@@ -487,7 +417,6 @@ local function _executeDash(player: Player, s: PlayerState, direction: string)
 	_addEnergy(s, MC.DashBonus)
 	_applyBurst(hrp, dir * speed, DC.Duration, "Dash")
 
-	-- Return to normal state after duration
 	task.delay(DC.Duration, function()
 		local cs = _states[player]
 		if cs and cs.State == STATE.DASHING then
@@ -502,32 +431,20 @@ end
 
 local function _handleDashRequest(player: Player, direction: string)
 	local s = _states[player]
-	if not s then
-		return
-	end
-	if _stunModule and _stunModule.IsStunned(player) then
-		return
-	end
-	if _ragdollModule and _ragdollModule.IsRagdolled(player) then
-		return
-	end
+	if not s then return end
+	if _stunModule and _stunModule.IsStunned(player) then return end
+	if _ragdollModule and _ragdollModule.IsRagdolled(player) then return end
 
 	local validDirs = { Forward = true, Backward = true, Left = true, Right = true }
-	if not validDirs[direction] then
-		return
-	end
+	if not validDirs[direction] then return end
 
 	local hum = _getHumanoid(player)
-	if not hum or hum.Health <= 0 then
-		return
-	end
+	if not hum or hum.Health <= 0 then return end
 
 	local now = os.clock()
 	local grounded = _isGrounded(hum)
 
-	if now - s.LastDash < DC.Cooldown then
-		return
-	end
+	if now - s.LastDash < DC.Cooldown then return end
 
 	if grounded then
 		_executeDash(player, s, direction)
@@ -535,7 +452,6 @@ local function _handleDashRequest(player: Player, direction: string)
 		s.AirDashUsed = true
 		_executeDash(player, s, direction)
 	else
-		-- Buffer for landing
 		s.DashBuffer = now
 		_bufferDirs[player] = direction
 	end
@@ -543,23 +459,16 @@ end
 
 local function _handleSlideRequest(player: Player)
 	local s = _states[player]
-	if not s then
-		return
-	end
+	if not s then return end
 	_startSlide(player, s)
 end
 
--- Wall jump: triggered from Humanoid.Jumping while wall running
 local function _handleWallJump(player: Player)
 	local s = _states[player]
-	if not s or not s.WallActive then
-		return
-	end
+	if not s or not s.WallActive then return end
 
 	local hrp = _getHRP(player)
-	if not hrp then
-		return
-	end
+	if not hrp then return end
 
 	local normal = s.WallNormal
 	_endWallRun(player, s)
@@ -568,24 +477,33 @@ local function _handleWallJump(player: Player)
 	_addEnergy(s, MC.WallJumpBonus)
 end
 
--- Dash jump cancel: triggered from Humanoid.Jumping while dashing
+-- FIX 2: Dash jump cancel — remove constraints first, defer velocity adjustment
+-- so Roblox's jump impulse is applied before we touch velocity.
+-- Previously we overwrote velocity.Y which fought the jump and felt wrong.
 local function _handleDashJumpCancel(player: Player)
 	local s = _states[player]
-	if not s or s.State ~= STATE.DASHING then
-		return
-	end
+	if not s or s.State ~= STATE.DASHING then return end
 
 	local hrp = _getHRP(player)
-	if not hrp then
-		return
-	end
+	if not hrp then return end
 
 	_removeConstraints(hrp, "Dash")
-
-	local vel = hrp.AssemblyLinearVelocity
-	local flat = Vector3.new(vel.X, 0, vel.Z).Magnitude
-	hrp.AssemblyLinearVelocity = Vector3.new(vel.X * 0.4, flat * DC.JumpCancelMult, vel.Z * 0.4)
 	s.State = STATE.AIRBORNE
+
+	-- Defer one frame so the engine applies its jump impulse first,
+	-- then we scale down horizontal speed while fully preserving vertical.
+	task.defer(function()
+		if not hrp or not hrp.Parent then return end
+		local vel = hrp.AssemblyLinearVelocity
+		local flat = Vector3.new(vel.X, 0, vel.Z)
+		if flat.Magnitude > 0.1 then
+			hrp.AssemblyLinearVelocity = Vector3.new(
+				flat.X * DC.JumpCancelMult,
+				vel.Y,  -- preserve jump Y entirely
+				flat.Z * DC.JumpCancelMult
+			)
+		end
+	end)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -595,30 +513,17 @@ end
 local function _tickFSM(player: Player, s: PlayerState, dt: number)
 	local hum = _getHumanoid(player)
 	local hrp = _getHRP(player)
-	if not hum or not hrp then
-		return
-	end
+	if not hum or not hrp then return end
 
-	-- Wall run and slide own their state
-	if s.WallActive then
-		s.State = STATE.WALLRUN
-		return
-	end
-	if s.SlideActive then
-		s.State = STATE.SLIDING
-		return
-	end
-	if s.State == STATE.DASHING then
-		return
-	end -- dash manages own exit
+	if s.WallActive then s.State = STATE.WALLRUN return end
+	if s.SlideActive then s.State = STATE.SLIDING return end
+	if s.State == STATE.DASHING then return end
 
 	local grounded = _isGrounded(hum)
 	local speed = _flatSpeed(hrp)
 
 	if not grounded then
-		if s.State ~= STATE.AIRBORNE then
-			s.AirTime = os.clock()
-		end
+		if s.State ~= STATE.AIRBORNE then s.AirTime = os.clock() end
 		s.State = STATE.AIRBORNE
 	elseif speed < 1 then
 		s.State = STATE.IDLE
@@ -628,14 +533,12 @@ local function _tickFSM(player: Player, s: PlayerState, dt: number)
 		s.State = STATE.WALK
 	end
 
-	-- On landing
 	if grounded then
 		if s.AirDashUsed then
 			s.AirDashUsed = false
 			_addEnergy(s, MC.LandBonus)
 		end
 
-		-- Buffered dash auto-fire
 		local now = os.clock()
 		if s.DashBuffer > 0 and now - s.DashBuffer < DC.BufferWindow then
 			s.DashBuffer = -math.huge
@@ -643,9 +546,7 @@ local function _tickFSM(player: Player, s: PlayerState, dt: number)
 			_bufferDirs[player] = nil
 			task.defer(function()
 				local cs = _states[player]
-				if cs then
-					_executeDash(player, cs, buffDir)
-				end
+				if cs then _executeDash(player, cs, buffDir) end
 			end)
 		end
 	end
@@ -653,7 +554,7 @@ end
 
 local function _tickEnergy(player: Player, s: PlayerState, dt: number)
 	if s.WallActive then
-		-- energy ticked inside _tickWallRun
+		-- ticked in _tickWallRun
 	elseif s.State == STATE.SPRINT then
 		_addEnergy(s, MC.SprintGain * dt)
 	elseif s.State == STATE.AIRBORNE then
@@ -666,7 +567,7 @@ local function _tickEnergy(player: Player, s: PlayerState, dt: number)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  ENERGY SYNC TO CLIENT
+--  ENERGY SYNC
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local _syncAccum = 0
@@ -674,13 +575,9 @@ local SYNC_RATE = 0.1
 
 local function _tickSync(dt: number)
 	_syncAccum = _syncAccum + dt
-	if _syncAccum < SYNC_RATE then
-		return
-	end
+	if _syncAccum < SYNC_RATE then return end
 	_syncAccum = 0
-	if not _remotes.EnergySync then
-		return
-	end
+	if not _remotes.EnergySync then return end
 	for player, s in pairs(_states) do
 		_remotes.EnergySync:FireClient(player, math.floor(s.Energy))
 	end
@@ -692,11 +589,8 @@ end
 
 local function _setupCharacter(player: Player, char: Model)
 	local s = _states[player]
-	if not s then
-		return
-	end
+	if not s then return end
 
-	-- Clean up leftover constraints from last life
 	local hrp = char:WaitForChild("HumanoidRootPart", 5) :: BasePart?
 	if hrp then
 		_removeConstraints(hrp, "Dash")
@@ -704,7 +598,6 @@ local function _setupCharacter(player: Player, char: Model)
 		_removeConstraints(hrp, "WallRun")
 	end
 
-	-- Reset state
 	s.WallActive = false
 	s.SlideActive = false
 	s.AirDashUsed = false
@@ -713,16 +606,11 @@ local function _setupCharacter(player: Player, char: Model)
 	s.Energy = 0
 	_bufferDirs[player] = nil
 
-	-- Wire jump events for wall jump + dash cancel
 	local hum = char:WaitForChild("Humanoid") :: Humanoid
 	hum.Jumping:Connect(function(active)
-		if not active then
-			return
-		end
+		if not active then return end
 		local cs = _states[player]
-		if not cs then
-			return
-		end
+		if not cs then return end
 		if cs.WallActive then
 			_handleWallJump(player)
 		elseif cs.State == STATE.DASHING then
@@ -784,9 +672,7 @@ function MovementService.init(stunModule, ragdollModule)
 
 	RunService.Heartbeat:Connect(function(dt)
 		for player, s in pairs(_states) do
-			if not player.Character then
-				continue
-			end
+			if not player.Character then continue end
 			_tickFSM(player, s, dt)
 			_tickEnergy(player, s, dt)
 			if s.WallActive then
@@ -804,4 +690,4 @@ function MovementService.init(stunModule, ragdollModule)
 	print("[MovementService] Ready.")
 end
 
-return MovementService --idk lol
+return MovementService
