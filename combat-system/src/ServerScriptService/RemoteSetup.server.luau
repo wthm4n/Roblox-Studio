@@ -9,6 +9,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CombatSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("CombatSettings"))
+local MovementSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("MovementSettings"))
 
 -- Create Remotes folder if it doesn't exist
 local folder = ReplicatedStorage:FindFirstChild("Remotes")
