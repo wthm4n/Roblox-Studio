@@ -1,35 +1,22 @@
 --[[
 	MovementController.client.lua  (CLIENT — LocalScript)
 	Client side of the Titanfall-tier movement system.
-
-	Responsibilities:
-	  • Own all animations (Idle/Walk/Run/Sprint/Dash/Slide/WallRun)
-	  • Send intent remotes to server (RequestDash, RequestSlide)
-	  • Receive effects from server (DashEffect, SlideStart/End, WallRunStart/End)
-	  • Camera roll system (side dash + wall run)
-	  • Display energy bar (optional — via EnergySync)
-	  • Sprint toggle (LeftControl)
-	  • Dash jump-cancel input (Space during dash)
-
-	Place in: StarterPlayerScripts/MovementController  (LocalScript)
+	Place in: StarterPlayerScripts/MovementController
 ]]
 
--- ── Services ──────────────────────────────────────────────────────────────────
 local Players           = game:GetService("Players")
 local UserInputService  = game:GetService("UserInputService")
 local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- ── Settings ──────────────────────────────────────────────────────────────────
-local Shared           = ReplicatedStorage:WaitForChild("Shared")
-local MS               = require(Shared:WaitForChild("MovementSettings"))
-local DC               = MS.Dash
-local WC               = MS.WallRun
-local SC               = MS.Slide
-local SP               = MS.Speed
-local Anims            = MS.Animations
+local Shared  = ReplicatedStorage:WaitForChild("Shared")
+local MS      = require(Shared:WaitForChild("MovementSettings"))
+local DC      = MS.Dash
+local WC      = MS.WallRun
+local SC      = MS.Slide
+local SP      = MS.Speed
+local Anims   = MS.Animations
 
--- ── Remotes ───────────────────────────────────────────────────────────────────
 local Remotes        = ReplicatedStorage:WaitForChild("Remotes")
 local function _re(n) return Remotes:WaitForChild(n) :: RemoteEvent end
 
@@ -42,7 +29,6 @@ local RE_WallRunStart = _re(MS.Remotes.WallRunStart)
 local RE_WallRunEnd   = _re(MS.Remotes.WallRunEnd)
 local RE_EnergySync   = _re(MS.Remotes.EnergySync)
 
--- ── Refs ──────────────────────────────────────────────────────────────────────
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
 
@@ -50,8 +36,8 @@ local Camera      = workspace.CurrentCamera
 --  ANIMATION ENGINE
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local _animator:    Animator? = nil
-local _tracks:      { [string]: AnimationTrack } = {}
+local _animator: Animator? = nil
+local _tracks: { [string]: AnimationTrack } = {}
 
 local function _killAnimate(char: Model)
 	local a = char:FindFirstChild("Animate")
@@ -103,7 +89,6 @@ local function _isPlaying(id: string): boolean
 	return t ~= nil and t.IsPlaying
 end
 
--- Play on a remote player's animator (no cache sharing)
 local function _playRemote(char: Model, animId: string, pri: Enum.AnimationPriority?, fade: number?)
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	local anim = hum and hum:FindFirstChildOfClass("Animator")
@@ -122,11 +107,11 @@ end
 
 local _sprintHeld    = false
 local _dashHeld      = false
-local _lastDashLocal = -math.huge   -- client-side cooldown mirror (avoids spam sends)
-local _isDashing     = false        -- local flag set by DashEffect, cleared after duration
+local _lastDashLocal = -math.huge
+local _isDashing     = false
 local _isSliding     = false
 local _isWallRunning = false
-local _energy        = 0            -- synced from server
+local _energy        = 0
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  SPRINT
@@ -195,38 +180,26 @@ end
 UserInputService.InputBegan:Connect(function(inp, proc)
 	if proc then return end
 
-	-- Sprint
 	if inp.KeyCode == Enum.KeyCode.LeftControl then
 		_setSprint(true)
-		-- Control + S = slide
 		if UserInputService:IsKeyDown(Enum.KeyCode.S) then
 			_trySlide()
 		end
 	end
 
-	-- Slide trigger: S while sprinting
 	if inp.KeyCode == Enum.KeyCode.S and _sprintHeld then
 		_trySlide()
 	end
 
-	-- Dash
 	if inp.KeyCode == DC.Key then
 		_dashHeld = true
 		_tryDash()
 	end
-
-	-- Jump cancel during dash (Space)
-	-- Server handles the physics via Humanoid.Jumping signal
-	-- Client just needs to be aware _isDashing is no longer true
 end)
 
 UserInputService.InputEnded:Connect(function(inp, _)
-	if inp.KeyCode == Enum.KeyCode.LeftControl then
-		_setSprint(false)
-	end
-	if inp.KeyCode == DC.Key then
-		_dashHeld = false
-	end
+	if inp.KeyCode == Enum.KeyCode.LeftControl then _setSprint(false) end
+	if inp.KeyCode == DC.Key then _dashHeld = false end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -242,8 +215,8 @@ local function _tickLocomotion()
 	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
 	if not hum or not hrp or hum.Health <= 0 then return end
 
-	local v     = hrp.AssemblyLinearVelocity
-	local flat  = Vector3.new(v.X, 0, v.Z).Magnitude
+	local v    = hrp.AssemblyLinearVelocity
+	local flat = Vector3.new(v.X, 0, v.Z).Magnitude
 
 	if flat < 0.5 then
 		if not _isPlaying(Anims.Idle) then
@@ -268,12 +241,13 @@ end
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  CAMERA ROLL SYSTEM
---  Additive delta-roll only — never overwrites camera position/pitch/yaw.
+--  FIX 3: Slower spring speed (8 vs 14), smaller angles (3deg vs 5deg),
+--  longer return delay, and no snap on zero return.
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local _camRoll       = 0
 local _camRollTarget = 0
-local ROLL_SPEED     = 14
+local ROLL_SPEED     = 8  -- lower = smoother lerp
 
 local function _setRoll(r: number)
 	_camRollTarget = r
@@ -282,19 +256,20 @@ end
 local function _tickCamera(dt: number)
 	local diff = _camRollTarget - _camRoll
 	if math.abs(diff) < 0.0001 then
-		if _camRollTarget == 0 and math.abs(_camRoll) > 0.0001 then
+		-- Cleanly zero out any residual roll without snapping
+		if math.abs(_camRoll) > 0.0001 then
 			Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, -_camRoll)
 			_camRoll = 0
 		end
 		return
 	end
 	local prev = _camRoll
-	_camRoll   = _camRoll + diff * math.min(1, dt * ROLL_SPEED)
+	_camRoll = _camRoll + diff * math.min(1, dt * ROLL_SPEED)
 	Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, _camRoll - prev)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  DASH EFFECT  (server → all clients)
+--  DASH EFFECT
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RE_DashEffect.OnClientEvent:Connect(function(player: Player, direction: string)
@@ -318,19 +293,20 @@ RE_DashEffect.OnClientEvent:Connect(function(player: Player, direction: string)
 		end
 	end
 
-	-- Camera roll: local only, side dashes only
 	if player ~= LocalPlayer then return end
-	local roll = direction == "Left" and math.rad(5)
-		or direction == "Right" and math.rad(-5)
-		or nil
+
+	-- FIX 3: Reduced roll angle (3deg), slower return (duration + 0.2s)
+	local roll = direction == "Left"  and math.rad(3)
+	          or direction == "Right" and math.rad(-3)
+	          or nil
 	if roll then
 		_setRoll(roll)
-		task.delay(DC.Duration + 0.05, function() _setRoll(0) end)
+		task.delay(DC.Duration + 0.2, function() _setRoll(0) end)
 	end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  SLIDE EFFECT  (server → all clients)
+--  SLIDE EFFECT
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RE_SlideStart.OnClientEvent:Connect(function(player: Player)
@@ -366,7 +342,7 @@ RE_SlideEnd.OnClientEvent:Connect(function(player: Player)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  WALL RUN EFFECT  (server → all clients)
+--  WALL RUN EFFECT
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RE_WallRunStart.OnClientEvent:Connect(function(player: Player, side: string)
@@ -408,14 +384,12 @@ RE_WallRunEnd.OnClientEvent:Connect(function(player: Player)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  ENERGY SYNC  (optional UI display)
+--  ENERGY SYNC
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RE_EnergySync.OnClientEvent:Connect(function(energy: number)
 	_energy = energy
-	-- Hook your UI bar here:
-	-- e.g. local bar = PlayerGui:FindFirstChild("EnergyBar")
-	-- if bar then bar.Frame.Size = UDim2.new(energy/100, 0, 1, 0) end
+	-- Hook your UI here if needed
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
