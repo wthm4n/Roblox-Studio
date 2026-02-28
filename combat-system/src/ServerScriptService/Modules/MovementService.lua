@@ -406,6 +406,10 @@ local function _executeDash(player: Player, s: PlayerState, direction: string)
 
 	if s.SlideActive then _endSlide(player, s) end
 
+	-- Always clear any leftover dash constraints before starting a new dash.
+	-- Without this, spamming dash stacks LinearVelocity instances and freezes the player.
+	_removeConstraints(hrp, "Dash")
+
 	local now = os.clock()
 	local speed = DC.BaseSpeed + s.Energy * DC.EnergyScale
 	local dir = _dashDir(hrp, direction)
@@ -477,9 +481,6 @@ local function _handleWallJump(player: Player)
 	_addEnergy(s, MC.WallJumpBonus)
 end
 
--- FIX 2: Dash jump cancel — remove constraints first, defer velocity adjustment
--- so Roblox's jump impulse is applied before we touch velocity.
--- Previously we overwrote velocity.Y which fought the jump and felt wrong.
 local function _handleDashJumpCancel(player: Player)
 	local s = _states[player]
 	if not s or s.State ~= STATE.DASHING then return end
@@ -487,22 +488,30 @@ local function _handleDashJumpCancel(player: Player)
 	local hrp = _getHRP(player)
 	if not hrp then return end
 
-	_removeConstraints(hrp, "Dash")
+	-- Mark state immediately so a second dash can't start during the gap
 	s.State = STATE.AIRBORNE
 
-	-- Defer one frame so the engine applies its jump impulse first,
-	-- then we scale down horizontal speed while fully preserving vertical.
-	task.defer(function()
-		if not hrp or not hrp.Parent then return end
-		local vel = hrp.AssemblyLinearVelocity
-		local flat = Vector3.new(vel.X, 0, vel.Z)
-		if flat.Magnitude > 0.1 then
-			hrp.AssemblyLinearVelocity = Vector3.new(
-				flat.X * DC.JumpCancelMult,
-				vel.Y,  -- preserve jump Y entirely
-				flat.Z * DC.JumpCancelMult
-			)
-		end
+	-- Destroy ALL dash constraints synchronously right now
+	_removeConstraints(hrp, "Dash")
+
+	-- 2-frame gap: frame 1 lets physics clear, frame 2 Roblox applies jump impulse,
+	-- then we carry horizontal momentum. Fixes the stuck-in-place spam bug.
+	task.delay(0, function()
+		task.delay(0, function()
+			if not hrp or not hrp.Parent then return end
+			local cs = _states[player]
+			-- Abort if a brand new dash started in the gap
+			if not cs or cs.State == STATE.DASHING then return end
+			local vel = hrp.AssemblyLinearVelocity
+			local flat = Vector3.new(vel.X, 0, vel.Z)
+			if flat.Magnitude > 0.1 then
+				hrp.AssemblyLinearVelocity = Vector3.new(
+					flat.X * DC.JumpCancelMult,
+					vel.Y,  -- preserve jump Y entirely
+					flat.Z * DC.JumpCancelMult
+				)
+			end
+		end)
 	end)
 end
 
