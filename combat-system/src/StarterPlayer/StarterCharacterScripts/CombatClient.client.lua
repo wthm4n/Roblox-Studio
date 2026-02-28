@@ -1,417 +1,451 @@
 --[[
-	CombatClient.lua  (CLIENT — LocalScript inside StarterPlayerScripts or StarterCharacterScripts)
-	
-	Responsibilities:
-	  • Listen for mouse / tap input → fire UsedM1 remote (intent only, no hit data)
-	  • ApplyHitEffect  → play hit-reaction / swing animation on correct character
-	  • HitConfirm      → (a) flash red Highlight on victim (all clients)
-	                       (b) play hit sound on attacker's client only
-	                       (c) camera shake on attacker's client only
+	MovementController.client.lua  (CLIENT — LocalScript)
+	Full movement system: Idle/Walk/Run/Sprint/Dash/Slide/WallRun animations + input.
 
-	Place in: StarterPlayerScripts/CombatClient  (or StarterCharacterScripts)
+	Place in: StarterPlayerScripts/MovementController  (LocalScript)
+
+	ARCHITECTURE:
+	  • We DISABLE the default Animate script entirely and own all animations here.
+	  • Sprint  : LeftControl held → boosted WalkSpeed + Run anim
+	  • Dash    : Q + WASD → fires RequestDash to server, plays directional anim
+	  • Slide   : LeftControl + S while sprinting → plays Slide anim, brief speed burst
+	  • WallRun : server detects + fires WallRunStart/End → we play the anim
+	  • Camera tilt on side dashes uses additive delta roll, NOT tweening Camera.CFrame
 ]]
 
 -- ── Services ──────────────────────────────────────────────────────────────────
 local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService  = game:GetService("UserInputService")
 local RunService        = game:GetService("RunService")
-local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local LocalPlayer  = Players.LocalPlayer
-local Camera       = workspace.CurrentCamera
-
--- ── Shared config ─────────────────────────────────────────────────────────────
-local Shared         = ReplicatedStorage:WaitForChild("Shared")
-local CombatSettings = require(Shared:WaitForChild("CombatSettings"))
+-- ── Settings ──────────────────────────────────────────────────────────────────
+local Shared           = ReplicatedStorage:WaitForChild("Shared")
+local MovementSettings = require(Shared:WaitForChild("MovementSettings"))
+local DC               = MovementSettings.Dash
+local WC               = MovementSettings.WallRun
+local SC               = MovementSettings.Slide
+local Anims            = MovementSettings.Animations
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
-local RemotesFolder     = ReplicatedStorage:WaitForChild("Remotes")
-local RE_UsedM1         = RemotesFolder:WaitForChild(CombatSettings.Remotes.UsedM1)        :: RemoteEvent
-local RE_ApplyHitEffect = RemotesFolder:WaitForChild(CombatSettings.Remotes.ApplyHitEffect) :: RemoteEvent
-local RE_HitConfirm     = RemotesFolder:WaitForChild(CombatSettings.Remotes.HitConfirm)     :: RemoteEvent
-local RE_StunApplied    = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunApplied)    :: RemoteEvent
-local RE_StunReleased   = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunReleased)   :: RemoteEvent
-local RE_TechRoll       = RemotesFolder:WaitForChild(CombatSettings.Remotes.TechRoll)       :: RemoteEvent
-local RE_Ragdoll        = RemotesFolder:WaitForChild(CombatSettings.Remotes.Ragdoll)        :: RemoteEvent
-local RE_RagdollEnd     = RemotesFolder:WaitForChild(CombatSettings.Remotes.RagdollEnd)     :: RemoteEvent
+local Remotes         = ReplicatedStorage:WaitForChild("Remotes")
+local RE_RequestDash  = Remotes:WaitForChild(MovementSettings.Remotes.RequestDash)  :: RemoteEvent
+local RE_DashEffect   = Remotes:WaitForChild(MovementSettings.Remotes.DashEffect)   :: RemoteEvent
+local RE_WallRunStart = Remotes:WaitForChild(MovementSettings.Remotes.WallRunStart) :: RemoteEvent
+local RE_WallRunEnd   = Remotes:WaitForChild(MovementSettings.Remotes.WallRunEnd)   :: RemoteEvent
 
--- ── Local state ───────────────────────────────────────────────────────────────
-local _lastM1Time = -math.huge
-local ANIM_CACHE: { [string]: { [string]: AnimationTrack } } = {}
+-- ── Local refs ────────────────────────────────────────────────────────────────
+local LocalPlayer = Players.LocalPlayer
+local Camera      = workspace.CurrentCamera
 
--- Track active highlight per character so we don't stack them
-local _activeHighlights: { [Model]: Highlight } = {}
+-- ══════════════════════════════════════════════════════════════════════════════
+--  ANIMATION SYSTEM
+--  We kill the default Animate script and drive every anim ourselves.
+-- ══════════════════════════════════════════════════════════════════════════════
 
--- ── Stun state (local player only) ────────────────────────────────────────────
--- Whether THIS local client is currently stunned (for input blocking + UI).
-local _locallyStunned  = false  -- is the local player currently stunned/ragdolled?
-local _locallyRagdolled = false -- is the local player currently ragdolled?
+local _animator:   Animator? = nil
+local _animTracks: { [string]: AnimationTrack } = {}
 
--- Tech roll cooldown mirror (server has authoritative check too)
-local _lastTechRoll   = -math.huge
-local TECH_ROLL_KEY   = Enum.KeyCode[CombatSettings.Stun.TechRoll.Key] or Enum.KeyCode.Q
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  ANIMATION HELPERS
--- ═══════════════════════════════════════════════════════════════════════════════
-
-local function _getTrack(character: Model, animId: string): AnimationTrack?
-	local humanoid  = character:FindFirstChildOfClass("Humanoid")
-	local animator  = humanoid and humanoid:FindFirstChildOfClass("Animator")
-	if not animator then return nil end
-
-	local charName = character.Name
-	if not ANIM_CACHE[charName] then ANIM_CACHE[charName] = {} end
-
-	if not ANIM_CACHE[charName][animId] then
-		local anim           = Instance.new("Animation")
-		anim.AnimationId     = animId
-		ANIM_CACHE[charName][animId] = animator:LoadAnimation(anim)
-		anim:Destroy()
-	end
-
-	return ANIM_CACHE[charName][animId]
+local function _killDefaultAnimate(character: Model)
+	local animate = character:FindFirstChild("Animate")
+	if animate then animate.Enabled = false end
 end
 
-local function _clearCache(character: Model)
-	-- Also clean up any leftover highlight
-	if _activeHighlights[character] then
-		_activeHighlights[character]:Destroy()
-		_activeHighlights[character] = nil
-	end
-	ANIM_CACHE[character.Name] = nil
+local function _loadTrack(animId: string): AnimationTrack?
+	if not _animator then return nil end
+	if _animTracks[animId] then return _animTracks[animId] end
+	local anim = Instance.new("Animation")
+	anim.AnimationId = animId
+	local track = _animator:LoadAnimation(anim)
+	anim:Destroy()
+	_animTracks[animId] = track
+	return track
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  HIT SOUND  (plays on attacker's client only, when server confirms a hit)
--- ═══════════════════════════════════════════════════════════════════════════════
-
-local function _playHitSound(comboIndex: number)
-	local soundId = CombatSettings.Audio["M" .. tostring(comboIndex) .. "Sound"]
-		or CombatSettings.Audio.M1Sound
-
-	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-	local sound       = Instance.new("Sound")
-	sound.SoundId     = soundId
-	sound.Volume      = 1.0
-	sound.RollOffMode = Enum.RollOffMode.InverseTapered
-	sound.RollOffMaxDistance = 50
-	sound.Parent = hrp or workspace
-	sound:Play()
-	game:GetService("Debris"):AddItem(sound, 3)
-end
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  RED HIGHLIGHT FLASH  (all clients see this on the victim)
--- ═══════════════════════════════════════════════════════════════════════════════
-
-local HL_CFG = CombatSettings.HitHighlight
-
-local function _flashHighlight(victimChar: Model)
-	-- Reuse existing highlight if it's already on this character (rapid hits)
-	local existing = _activeHighlights[victimChar]
-	if existing then
-		-- Just reset the removal timer by cancelling the old task implicitly;
-		-- we'll create a new one below after re-setting properties.
-		existing:Destroy()
-		_activeHighlights[victimChar] = nil
-	end
-
-	-- Create a fresh Highlight parented inside the victim's character
-	local hl                    = Instance.new("Highlight")
-	hl.FillColor                = HL_CFG.FillColor
-	hl.OutlineColor             = HL_CFG.OutlineColor
-	hl.FillTransparency         = HL_CFG.FillTransparency
-	hl.OutlineTransparency      = HL_CFG.OutlineTransparency
-	hl.Adornee                  = victimChar   -- entire character model
-	hl.DepthMode                = Enum.HighlightDepthMode.Occluded
-	hl.Parent                   = victimChar
-
-	_activeHighlights[victimChar] = hl
-
-	-- Auto-remove after Duration
-	task.delay(HL_CFG.Duration, function()
-		if _activeHighlights[victimChar] == hl then
-			hl:Destroy()
-			_activeHighlights[victimChar] = nil
+local function _preloadAll()
+	for _, id in pairs(Anims) do
+		if type(id) == "string" then
+			_loadTrack(id)
 		end
+	end
+end
+
+local function _playTrack(animId: string, fadeIn: number?, priority: Enum.AnimationPriority?)
+	local track = _loadTrack(animId)
+	if not track then return end
+	if track.IsPlaying then return end
+	track.Priority = priority or Enum.AnimationPriority.Core
+	track:Play(fadeIn or 0.15)
+end
+
+local function _stopTrack(animId: string, fadeOut: number?)
+	local track = _animTracks[animId]
+	if track and track.IsPlaying then
+		track:Stop(fadeOut or 0.2)
+	end
+end
+
+local function _stopAllLocomotion()
+	_stopTrack(Anims.Idle, 0.1)
+	_stopTrack(Anims.Walk, 0.1)
+	_stopTrack(Anims.Run,  0.1)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  INPUT STATE
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local _sprintHeld    = false
+local _dashHeld      = false
+local _lastDash      = -math.huge
+local _isSliding     = false
+local _isWallRunning = false
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  SPRINT
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local BASE_SPEED   = 16
+local SPRINT_SPEED = 28
+
+local function _setSprint(on: boolean)
+	_sprintHeld = on
+	local character = LocalPlayer.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or _isSliding then return end
+	humanoid.WalkSpeed = on and SPRINT_SPEED or BASE_SPEED
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  SLIDE
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local function _startSlide()
+	if _isSliding then return end
+	local character = LocalPlayer.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humanoid or not hrp then return end
+
+	-- Need to be moving to slide
+	local flatSpeed = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z).Magnitude
+	if flatSpeed < 5 then return end
+
+	_isSliding = true
+	_stopAllLocomotion()
+
+	humanoid.HipHeight  = SC.CrouchHipHeight
+	humanoid.WalkSpeed  = SC.Speed
+
+	_playTrack(Anims.Slide, 0.08, Enum.AnimationPriority.Action2)
+
+	task.delay(SC.Duration, function()
+		if not _isSliding then return end
+		_isSliding = false
+		local char = LocalPlayer.Character
+		local hum  = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.HipHeight  = SC.DefaultHipHeight
+			hum.WalkSpeed  = _sprintHeld and SPRINT_SPEED or BASE_SPEED
+		end
+		_stopTrack(Anims.Slide, 0.2)
 	end)
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  CAMERA SHAKE  (only the attacker's local client runs this)
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  DASH INPUT
+-- ══════════════════════════════════════════════════════════════════════════════
 
--- Pure Luau trauma-style shake — no external libraries needed.
--- We accumulate a shakeOffset that we apply to Camera.CFrame every frame.
+local KEY_TO_DIR: { [Enum.KeyCode]: string } = {
+	[DC.Keys.Forward]  = "Forward",
+	[DC.Keys.Backward] = "Backward",
+	[DC.Keys.Left]     = "Left",
+	[DC.Keys.Right]    = "Right",
+}
 
-local _shakeOffset  = Vector3.zero
-local _shakePower   = 0        -- current shake magnitude (decays over time)
-local _shakeFreq    = 18       -- oscillations per second
-local _shakeTimer   = 0        -- time accumulator for oscillation
-local _shakeDurLeft = 0        -- seconds remaining for this shake
+local function _tryDash()
+	local now = os.clock()
+	if now - _lastDash < DC.Cooldown  then return end
+	if not _dashHeld                  then return end
+	if _isSliding or _isWallRunning   then return end
 
-RunService.RenderStepped:Connect(function(dt: number)
-	if _shakeDurLeft <= 0 then
-		_shakeOffset = Vector3.zero
+	local character = LocalPlayer.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return end
+
+	local direction = "Forward"
+	for keyCode, dir in pairs(KEY_TO_DIR) do
+		if UserInputService:IsKeyDown(keyCode) then
+			direction = dir
+			break
+		end
+	end
+
+	_lastDash = now
+	RE_RequestDash:FireServer(direction)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  INPUT BINDING
+-- ══════════════════════════════════════════════════════════════════════════════
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+
+	if input.KeyCode == Enum.KeyCode.LeftControl then
+		_setSprint(true)
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+			_startSlide()
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode.S and _sprintHeld then
+		_startSlide()
+	end
+
+	if input.KeyCode == DC.Key then
+		_dashHeld = true
+		_tryDash()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, _)
+	if input.KeyCode == Enum.KeyCode.LeftControl then
+		_setSprint(false)
+	end
+	if input.KeyCode == DC.Key then
+		_dashHeld = false
+	end
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  LOCOMOTION TICK  (Idle / Walk / Run)
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local function _tickLocomotion()
+	-- Don't fight action anims
+	if _isSliding or _isWallRunning then return end
+
+	local character = LocalPlayer.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local hrp      = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humanoid or not hrp or humanoid.Health <= 0 then return end
+
+	local vel       = hrp.AssemblyLinearVelocity
+	local flatSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+
+	-- Helper: is this specific track already playing?
+	local function playing(id)
+		local t = _animTracks[id]
+		return t and t.IsPlaying
+	end
+
+	if flatSpeed < 0.5 then
+		if not playing(Anims.Idle) then
+			_stopTrack(Anims.Walk, 0.2)
+			_stopTrack(Anims.Run,  0.2)
+			_playTrack(Anims.Idle, 0.2, Enum.AnimationPriority.Core)
+		end
+	elseif _sprintHeld or flatSpeed > SPRINT_SPEED * 0.7 then
+		if not playing(Anims.Run) then
+			_stopTrack(Anims.Idle, 0.15)
+			_stopTrack(Anims.Walk, 0.15)
+			_playTrack(Anims.Run,  0.15, Enum.AnimationPriority.Core)
+		end
+	else
+		if not playing(Anims.Walk) then
+			_stopTrack(Anims.Idle, 0.15)
+			_stopTrack(Anims.Run,  0.15)
+			_playTrack(Anims.Walk, 0.15, Enum.AnimationPriority.Core)
+		end
+	end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  CAMERA TILT  (side dashes + wall run)
+--
+--  The WRONG way: TweenService:Create(Camera, ...) or Camera.CFrame = newCF
+--    → This overwrites position/look that Roblox's camera controller manages.
+--    → Results in camera snapping, jitter, or spinning.
+--
+--  The RIGHT way: track a roll target, lerp _camRoll toward it each frame,
+--    then multiply the delta onto Camera.CFrame so only the roll axis changes.
+--    Roblox's controller still owns position + yaw + pitch.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local _camRoll       = 0    -- current applied roll (radians)
+local _camRollTarget = 0    -- where we're lerping to
+local ROLL_LERP_SPEED = 12  -- how snappy the lerp is
+
+local function _setRollTarget(rad: number)
+	_camRollTarget = rad
+end
+
+local function _tickCamera(dt: number)
+	local diff = _camRollTarget - _camRoll
+	if math.abs(diff) < 0.0001 then
+		-- Snap to exactly 0 when returning to neutral so error doesn't accumulate
+		if _camRollTarget == 0 and _camRoll ~= 0 then
+			Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, -_camRoll)
+			_camRoll = 0
+		end
 		return
 	end
 
-	_shakeDurLeft = _shakeDurLeft - dt
-	_shakeTimer   = _shakeTimer   + dt
+	local prev   = _camRoll
+	_camRoll     = _camRoll + diff * math.min(1, dt * ROLL_LERP_SPEED)
+	local delta  = _camRoll - prev
 
-	-- Smooth decay: power falls off as duration runs out
-	local progress  = math.max(0, _shakeDurLeft) / math.max(0.001, _shakeTimer + _shakeDurLeft)
-	local magnitude = _shakePower * progress
-
-	-- Oscillate on X/Y using sin at slightly different frequencies for organicness
-	local ox = math.sin(_shakeTimer * _shakeFreq * math.pi * 2)          * magnitude
-	local oy = math.sin(_shakeTimer * _shakeFreq * math.pi * 2.3 + 1.1) * magnitude
-	_shakeOffset = Vector3.new(ox, oy, 0)
-
-	Camera.CFrame = Camera.CFrame * CFrame.new(_shakeOffset)
-end)
-
-local function _triggerCameraShake(comboIndex: number)
-	local profile = CombatSettings.CameraShake[comboIndex]
-		or CombatSettings.CameraShake[1]
-
-	-- If a shake is already running, take the stronger value
-	_shakePower   = math.max(_shakePower, profile.Magnitude)
-	_shakeFreq    = profile.Frequency
-	-- Reset duration (extend if a new hit comes in fast)
-	_shakeDurLeft = profile.Duration
-	_shakeTimer   = 0
+	-- Apply only the delta so we're not fighting the camera controller
+	Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, delta)
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  STUN REMOTE HANDLERS
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  DASH EFFECT  (fired by server → all clients)
+-- ══════════════════════════════════════════════════════════════════════════════
 
--- StunApplied (victim: Player, duration: number)
-RE_StunApplied.OnClientEvent:Connect(function(victim: Player, _duration: number)
-	if victim ~= LocalPlayer then return end
-	_locallyStunned = true
-	-- No GUI — ragdoll physics is the visual
-end)
-
--- StunReleased (victim: Player, reason: string)
-RE_StunReleased.OnClientEvent:Connect(function(victim: Player, _reason: string)
-	if victim ~= LocalPlayer then return end
-	_locallyStunned = false
-end)
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  RAGDOLL REMOTE HANDLERS
---  Server tells ALL clients to disable / re-enable the victim's Animate script.
---  Without this, Roblox's default animation controller fights the physics joints
---  and the ragdoll looks stiff / snaps back to idle pose.
--- ═══════════════════════════════════════════════════════════════════════════════
-
-local function _setAnimateEnabled(char: Model, enabled: boolean)
-	-- The "Animate" LocalScript lives directly under the character model
-	local animScript = char:FindFirstChild("Animate")
-	if animScript and animScript:IsA("LocalScript") then
-		animScript.Disabled = not enabled
-	end
-	-- Also stop all currently-playing animation tracks so they don't hold poses
-	local humanoid = char:FindFirstChildOfClass("Humanoid")
-	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-	if animator and not enabled then
-		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-			track:Stop(0)
-		end
-	end
-end
-
--- Ragdoll: victim: Player, active: boolean
-RE_Ragdoll.OnClientEvent:Connect(function(victim: Player, _active: boolean)
-	local char = victim.Character
-	if not char then return end
-
-	-- Disable Animate on ALL clients so nobody sees animation fighting the physics
-	_setAnimateEnabled(char, false)
-
-	-- Track ragdoll state for the local player (blocks input)
-	if victim == LocalPlayer then
-		_locallyRagdolled = true
-		_locallyStunned   = true
-	end
-end)
-
--- RagdollEnd: victim: Player
-RE_RagdollEnd.OnClientEvent:Connect(function(victim: Player)
-	local char = victim.Character
-	if not char then return end
-
-	_setAnimateEnabled(char, true)
-
-	if victim == LocalPlayer then
-		_locallyRagdolled = false
-		_locallyStunned   = false
-	end
-end)
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  INPUT → INTENT
-
--- ═══════════════════════════════════════════════════════════════════════════════
-
-local function _onM1Input()
-	-- Can't attack while stunned (server also gates, avoids the round trip)
-	if _locallyStunned or _locallyRagdolled then return end
-
-	local now = os.clock()
-	if now - _lastM1Time < CombatSettings.Cooldowns.M1 then return end
-	_lastM1Time = now
-
-	local char = LocalPlayer.Character
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum or hum.Health <= 0 then return end
-
-	RE_UsedM1:FireServer()
-end
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  INPUT LISTENER  (M1 attack + Q tech roll)
--- ═══════════════════════════════════════════════════════════════════════════════
-
-UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-	if gameProcessed then return end
-
-	-- M1 attack
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		_onM1Input()
-	end
-
-	-- Tech roll escape (Q while stunned)
-	if input.KeyCode == TECH_ROLL_KEY and _locallyStunned then
-		local now = os.clock()
-		local cd  = CombatSettings.Stun.TechRoll.Cooldown
-		if now - _lastTechRoll >= cd then
-			_lastTechRoll = now
-			RE_TechRoll:FireServer()
-		end
-	end
-end)
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: ANIMATION PLAYBACK  (swing anims + hit reactions)
---
---  Hit reactions (HitReaction1–5) are played DIRECTLY on the victim's Animator,
---  bypassing the Animate LocalScript entirely. This means they work even while
---  the character is ragdolled (Animate is disabled during ragdoll).
---
---  Swing anims (M1–M5) play on the attacker normally.
--- ═══════════════════════════════════════════════════════════════════════════════
-
-RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, _comboIndex: number)
-	local character = targetPlayer.Character
+RE_DashEffect.OnClientEvent:Connect(function(player: Player, direction: string)
+	local character = player.Character
 	if not character then return end
 
-	local animEntry = CombatSettings.Animations[animKey]
-	local animId: string?
+	local animKey = DC.Animations[direction]
+	local animId  = animKey and Anims[animKey]
 
-	if type(animEntry) == "table" then
-		animId = animEntry.Id
-	elseif type(animEntry) == "string" then
-		animId = animEntry
-	end
-	if not animId then return end
-
-	local isHitReaction = animKey:sub(1, 11) == "HitReaction"
-		or animKey:sub(1, 18) == "BlockingHitReaction"
-
-	if isHitReaction then
-		-- ── Play directly on Animator — works even with Animate disabled ─────
-		local humanoid  = character:FindFirstChildOfClass("Humanoid")
-		local animator  = humanoid and humanoid:FindFirstChildOfClass("Animator")
-		if not animator then return end
-
-		-- Stop any other hit reaction already playing so they don't stack
-		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-			local name = track.Animation and track.Animation.AnimationId or ""
-			-- Stop other reactions but not the ragdoll/idle if Animate is off
-			if name ~= animId then
-				local isReact = false
-				for _, key in ipairs({ "HitReaction1","HitReaction2","HitReaction3","HitReaction4","HitReaction5",
-					"BlockingHitReaction1","BlockingHitReaction2","BlockingHitReaction3","BlockingHitReaction4","BlockingHitReaction5" }) do
-					local data = CombatSettings.Animations[key]
-					if type(data) == "string" and data == name then
-						isReact = true
-						break
-					end
-				end
-				if isReact then track:Stop(0) end
+	if animId then
+		if player == LocalPlayer then
+			_stopAllLocomotion()
+			_playTrack(animId, 0.05, Enum.AnimationPriority.Action3)
+			task.delay(DC.Duration + 0.05, function()
+				_stopTrack(animId, 0.15)
+			end)
+		else
+			-- Remote player: play on their animator without affecting our cache
+			local hum = character:FindFirstChildOfClass("Humanoid")
+			local animator = hum and hum:FindFirstChildOfClass("Animator")
+			if animator then
+				local a = Instance.new("Animation")
+				a.AnimationId = animId
+				local t = animator:LoadAnimation(a)
+				a:Destroy()
+				t.Priority = Enum.AnimationPriority.Action3
+				t:Play(0.05)
 			end
 		end
+	end
 
-		-- Load + play the reaction track fresh every hit (short, one-shot)
-		local anim = Instance.new("Animation")
-		anim.AnimationId = animId
-		local track = animator:LoadAnimation(anim)
-		anim:Destroy()
-		track.Priority = Enum.AnimationPriority.Action4  -- above everything
-		track:Play(0)   -- no fade-in; snappy hit feedback
-		-- Auto-stop after it finishes so it doesn't hold the last frame
-		track.Stopped:Connect(function() track:Destroy() end)
+	-- Camera roll (local only, side dashes only)
+	if player ~= LocalPlayer then return end
+	if direction == "Left" then
+		_setRollTarget(math.rad(5))
+		task.delay(DC.Duration, function() _setRollTarget(0) end)
+	elseif direction == "Right" then
+		_setRollTarget(math.rad(-5))
+		task.delay(DC.Duration, function() _setRollTarget(0) end)
+	end
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  WALL RUN ANIMATIONS
+-- ══════════════════════════════════════════════════════════════════════════════
+
+RE_WallRunStart.OnClientEvent:Connect(function(player: Player, side: string)
+	local character = player.Character
+	if not character then return end
+
+	local animId = (side == "Left") and Anims.WallRunLeft or Anims.WallRunRight
+
+	if player == LocalPlayer then
+		_isWallRunning = true
+		_stopAllLocomotion()
+		_playTrack(animId, 0.1, Enum.AnimationPriority.Action2)
+		local tilt = (side == "Right") and math.rad(-7) or math.rad(7)
+		_setRollTarget(tilt)
 	else
-		-- ── Swing animation (attacker) — normal path ─────────────────────────
-		local track = _getTrack(character, animId)
-		if not track then return end
+		local hum = character:FindFirstChildOfClass("Humanoid")
+		local animator = hum and hum:FindFirstChildOfClass("Animator")
+		if animator then
+			local a = Instance.new("Animation")
+			a.AnimationId = animId
+			local t = animator:LoadAnimation(a)
+			a:Destroy()
+			t.Priority = Enum.AnimationPriority.Action2
+			t:Play(0.1)
+		end
+	end
+end)
 
-		-- Stop conflicting swing anims on rapid combos
-		if animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) then
-			for i = 1, 5 do
-				local prevKey  = "M" .. tostring(i)
-				local prevData = CombatSettings.Animations[prevKey]
-				if prevData and prevKey ~= animKey then
-					local prevId    = type(prevData) == "table" and prevData.Id or prevData
-					local prevTrack = _getTrack(character, prevId)
-					if prevTrack and prevTrack.IsPlaying then
-						prevTrack:Stop(0.05)
-					end
+RE_WallRunEnd.OnClientEvent:Connect(function(player: Player)
+	if player == LocalPlayer then
+		_isWallRunning = false
+		_stopTrack(Anims.WallRunLeft,  0.2)
+		_stopTrack(Anims.WallRunRight, 0.2)
+		_setRollTarget(0)
+	else
+		local character = player.Character
+		if not character then return end
+		local hum = character:FindFirstChildOfClass("Humanoid")
+		local animator = hum and hum:FindFirstChildOfClass("Animator")
+		if animator then
+			for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+				local id = t.Animation and t.Animation.AnimationId
+				if id == Anims.WallRunLeft or id == Anims.WallRunRight then
+					t:Stop(0.2)
 				end
 			end
 		end
-
-		track:Play()
 	end
 end)
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: HIT CONFIRM  (highlight + sound + shake)
---  Payload: attacker: Player, victim: Player, comboIndex: number
--- ═══════════════════════════════════════════════════════════════════════════════
-
-RE_HitConfirm.OnClientEvent:Connect(function(attacker: Player, victim: Player, comboIndex: number)
-	-- ── 1. Red highlight on victim (every client renders this) ───────────────
-	local victimChar = victim.Character
-	if victimChar then
-		_flashHighlight(victimChar)
-	end
-
-	-- ── 2. Hit sound + camera shake — ONLY on the attacker's own client ───────
-	if attacker ~= LocalPlayer then return end
-
-	_playHitSound(comboIndex)
-	_triggerCameraShake(comboIndex)
-end)
-
--- ═══════════════════════════════════════════════════════════════════════════════
---  CHARACTER LIFECYCLE
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  CHARACTER SETUP
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local function _onCharacterAdded(character: Model)
-	_clearCache(character)
-	character.AncestryChanged:Connect(function(_, parent)
-		if not parent then _clearCache(character) end
+	_animTracks    = {}
+	_animator      = nil
+	_isSliding     = false
+	_isWallRunning = false
+	_camRoll       = 0
+	_camRollTarget = 0
+	_sprintHeld    = false
+
+	local humanoid = character:WaitForChild("Humanoid") :: Humanoid
+	_animator = humanoid:WaitForChild("Animator") :: Animator
+
+	-- Kill default Animate immediately
+	_killDefaultAnimate(character)
+
+	-- Kill it again if it gets re-added (Roblox sometimes re-parents it)
+	character.ChildAdded:Connect(function(child)
+		if child.Name == "Animate" then
+			task.defer(function()
+				if child and child.Parent then child.Enabled = false end
+			end)
+		end
 	end)
+
+	humanoid.WalkSpeed = BASE_SPEED
+	humanoid.JumpPower = 50
+
+	_preloadAll()
 end
 
-LocalPlayer.CharacterAdded:Connect(_onCharacterAdded)
 if LocalPlayer.Character then
 	_onCharacterAdded(LocalPlayer.Character)
 end
+LocalPlayer.CharacterAdded:Connect(_onCharacterAdded)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  MAIN LOOP
+-- ══════════════════════════════════════════════════════════════════════════════
+
+RunService.RenderStepped:Connect(function(dt)
+	_tickLocomotion()
+	_tickCamera(dt)
+end)
+
+print("[MovementController] Ready.")
