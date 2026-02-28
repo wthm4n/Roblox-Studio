@@ -10,7 +10,7 @@ local MovementSettings = {}
 --  ANIMATIONS
 -- ══════════════════════════════════════════
 MovementSettings.Animations = {
-	Idle         = "rbxassetid://98255682666444",
+	Idle         = "rbxassetid://133939959372694",
 	Walk         = "rbxassetid://101695660356667",
 	Run          = "rbxassetid://110745974890930",
 	DashW        = "rbxassetid://88193156661727",
