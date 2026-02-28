@@ -12,21 +12,21 @@
 ]]
 
 -- ── Services ──────────────────────────────────────────────────────────────────
-local Players           = game:GetService("Players")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 -- ── Module references ─────────────────────────────────────────────────────────
 -- Adjust paths to match your project hierarchy.
-local Modules          = ServerScriptService:WaitForChild("Modules")
-local Shared           = ReplicatedStorage:WaitForChild("Shared")
+local Modules = ServerScriptService:WaitForChild("Modules")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
 
 local AbilityController = require(Modules:WaitForChild("AbilityController"))
-local HitboxModule      = require(Modules:WaitForChild("HitboxModule"))
-local DamageModule      = require(Modules:WaitForChild("DamageModule"))
-local StunModule        = require(Modules:WaitForChild("StunModule"))
-local RagdollModule     = require(Modules:WaitForChild("RagdollModule"))
-local CombatSettings    = require(Shared:WaitForChild("CombatSettings"))
+local HitboxModule = require(Modules:WaitForChild("HitboxModule"))
+local DamageModule = require(Modules:WaitForChild("DamageModule"))
+local StunModule = require(Modules:WaitForChild("StunModule"))
+local RagdollModule = require(Modules:WaitForChild("RagdollModule"))
+local CombatSettings = require(Shared:WaitForChild("CombatSettings"))
 
 -- ── Remotes setup ─────────────────────────────────────────────────────────────
 local RemotesFolder: Folder = ReplicatedStorage:WaitForChild("Remotes")
@@ -37,14 +37,14 @@ local function _getRemote(name: string): RemoteEvent
 	return r :: RemoteEvent
 end
 
-local RE_UsedM1         = _getRemote(CombatSettings.Remotes.UsedM1)
+local RE_UsedM1 = _getRemote(CombatSettings.Remotes.UsedM1)
 local RE_ApplyHitEffect = _getRemote(CombatSettings.Remotes.ApplyHitEffect)
-local RE_HitConfirm     = _getRemote(CombatSettings.Remotes.HitConfirm)
-local RE_StunApplied    = _getRemote(CombatSettings.Remotes.StunApplied)
-local RE_StunReleased   = _getRemote(CombatSettings.Remotes.StunReleased)
-local RE_TechRoll       = _getRemote(CombatSettings.Remotes.TechRoll)
-local RE_Ragdoll        = _getRemote(CombatSettings.Remotes.Ragdoll)
-local RE_RagdollEnd     = _getRemote(CombatSettings.Remotes.RagdollEnd)
+local RE_HitConfirm = _getRemote(CombatSettings.Remotes.HitConfirm)
+local RE_StunApplied = _getRemote(CombatSettings.Remotes.StunApplied)
+local RE_StunReleased = _getRemote(CombatSettings.Remotes.StunReleased)
+local RE_TechRoll = _getRemote(CombatSettings.Remotes.TechRoll)
+local RE_Ragdoll = _getRemote(CombatSettings.Remotes.Ragdoll)
+local RE_RagdollEnd = _getRemote(CombatSettings.Remotes.RagdollEnd)
 
 -- Initialise StunModule first (RagdollModule depends on it)
 StunModule.init(
@@ -53,25 +53,22 @@ StunModule.init(
 )
 
 -- Initialise RagdollModule (depends on StunModule)
-RagdollModule.init(
-	{ Ragdoll = RE_Ragdoll, RagdollEnd = RE_RagdollEnd },
-	StunModule
-)
+RagdollModule.init({ Ragdoll = RE_Ragdoll, RagdollEnd = RE_RagdollEnd }, StunModule)
 
 -- Initialise DamageModule with all dependencies
 DamageModule.init(
 	{ ApplyHitEffect = RE_ApplyHitEffect, HitConfirm = RE_HitConfirm },
 	StunModule,
 	RagdollModule,
-	CombatSettings.Ragdoll,           -- full ragdoll config (TriggerOnHit, Duration, LaunchForce)
-	CombatSettings.Stun.Duration      -- stun durations for non-ragdoll hits
+	CombatSettings.Ragdoll, -- full ragdoll config (TriggerOnHit, Duration, LaunchForce)
+	CombatSettings.Stun.Duration -- stun durations for non-ragdoll hits
 )
 
 -- ── Per-player state ──────────────────────────────────────────────────────────
 type PlayerCombatState = {
-	Controller : typeof(AbilityController.new(...)),
-	ComboIndex : number,
-	ComboTimer : thread?,    -- coroutine for combo reset
+	Controller: typeof(AbilityController.new(...)),
+	ComboIndex: number,
+	ComboTimer: thread?, -- coroutine for combo reset
 }
 
 local playerStates: { [Player]: PlayerCombatState } = {}
@@ -81,27 +78,31 @@ local playerStates: { [Player]: PlayerCombatState } = {}
 -- Validates server-side that attacker is actually facing the alleged target zone.
 -- dot(attackerLook, dirToTarget) must exceed MinDotProduct.
 local function _isFacing(attackerHRP: BasePart, targetPos: Vector3): boolean
-	local dir    = (targetPos - attackerHRP.Position)
+	local dir = (targetPos - attackerHRP.Position)
 	local flatDir = Vector3.new(dir.X, 0, dir.Z)
-	if flatDir.Magnitude < 0.001 then return true end  -- point-blank; allow
+	if flatDir.Magnitude < 0.001 then
+		return true
+	end -- point-blank; allow
 
-	local look  = attackerHRP.CFrame.LookVector
-	local dot   = look:Dot(flatDir.Unit)
+	local look = attackerHRP.CFrame.LookVector
+	local dot = look:Dot(flatDir.Unit)
 	return dot >= CombatSettings.Combo.MinDotProduct
 end
 
 -- Basic LOS check: raycast from attacker HRP to victim HRP, ignoring both characters.
 local function _hasLOS(attacker: Player, victim: Player): boolean
 	local aHRP = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart")
-	local vHRP = victim.Character  and victim.Character:FindFirstChild("HumanoidRootPart")
-	if not aHRP or not vHRP then return false end
+	local vHRP = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+	if not aHRP or not vHRP then
+		return false
+	end
 
-	local origin    = aHRP.Position
+	local origin = aHRP.Position
 	local direction = (vHRP.Position - origin)
 
 	local rayParams = RaycastParams.new()
 	rayParams.FilterDescendantsInstances = { attacker.Character, victim.Character }
-	rayParams.FilterType                  = Enum.RaycastFilterType.Exclude
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 	local result = workspace:Raycast(origin, direction, rayParams)
 	-- If the ray hits nothing between them, LOS is clear.
@@ -126,8 +127,8 @@ local function _onPlayerAdded(player: Player)
 
 	-- Register M1 ability
 	controller:RegisterAbility("M1", {
-		Cooldown      = CombatSettings.Cooldowns.M1,
-		StaminaCost   = 0,
+		Cooldown = CombatSettings.Cooldowns.M1,
+		StaminaCost = 0,
 		Interruptible = true,
 	})
 
@@ -161,7 +162,9 @@ end
 ]]
 RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	local state = playerStates[attacker]
-	if not state then return end
+	if not state then
+		return
+	end
 
 	local controller = state.Controller
 
@@ -178,11 +181,17 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 
 	-- ── 2. Character sanity ─────────────────────────────────────────────────
 	local character = attacker.Character
-	if not character then return end
+	if not character then
+		return
+	end
 	local hrp: BasePart? = character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
+	if not hrp then
+		return
+	end
 	local humanoid: Humanoid? = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or humanoid.Health <= 0 then return end
+	if not humanoid or humanoid.Health <= 0 then
+		return
+	end
 
 	-- ── 3. Advance combo index ───────────────────────────────────────────────
 	state.ComboIndex = (state.ComboIndex % CombatSettings.Combo.MaxHits) + 1
@@ -191,7 +200,9 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	-- Determine animation key: M1, M2, M3, M4, M5
 	local animKey = "M" .. tostring(comboIndex)
 	local animData = CombatSettings.Animations[animKey]
-	if not animData then return end
+	if not animData then
+		return
+	end
 
 	-- ── 4. Commit: start cooldown immediately ────────────────────────────────
 	controller:StartCooldown("M1")
@@ -202,12 +213,14 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	-- ── 6. Wait for HitFrame, then fire hitbox ───────────────────────────────
 	task.delay(animData.HitFrame, function()
 		-- Re-validate: player might have left or died during the windup
-		if not attacker.Character then return end
+		if not attacker.Character then
+			return
+		end
 
 		local damage = CombatSettings.Combo.Damage[comboIndex]
 			or CombatSettings.Combo.Damage[#CombatSettings.Combo.Damage]
 
-		local hitbox  = HitboxModule.new(
+		local hitbox = HitboxModule.new(
 			attacker,
 			CombatSettings.Combo.HitboxSize,
 			CombatSettings.Combo.HitboxOffset,
@@ -221,11 +234,17 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 		for _, victim in ipairs(victims) do
 			-- Facing check per victim
 			local victimChar = victim.Character
-			local victimHRP  = victimChar and victimChar:FindFirstChild("HumanoidRootPart")
-			if not victimHRP then continue end
+			local victimHRP = victimChar and victimChar:FindFirstChild("HumanoidRootPart")
+			if not victimHRP then
+				continue
+			end
 
-			if not _isFacing(hrp, victimHRP.Position) then continue end
-			if not _hasLOS(attacker, victim) then continue end
+			if not _isFacing(hrp, victimHRP.Position) then
+				continue
+			end
+			if not _hasLOS(attacker, victim) then
+				continue
+			end
 
 			damager:Apply(victim, damage, comboIndex)
 		end
