@@ -58,6 +58,16 @@ MovementSettings.Dash = {
 }
 
 -- ══════════════════════════════════════════
+--  SLIDE SETTINGS
+-- ══════════════════════════════════════════
+MovementSettings.Slide = {
+	Speed            = 38,    -- studs/s during slide
+	Duration         = 0.9,   -- seconds before auto-end
+	CrouchHipHeight  = 0.5,   -- hip height while sliding
+	DefaultHipHeight = 2.0,   -- restored after slide (R15 = 2.0, R6 = 0)
+}
+
+-- ══════════════════════════════════════════
 --  WALL RUN SETTINGS
 -- ══════════════════════════════════════════
 MovementSettings.WallRun = {
@@ -73,7 +83,7 @@ MovementSettings.WallRun = {
 	-- Physics while wall running
 	Gravity          = -18,     -- reduced gravity (workspace default ~196.2 studs/s²)
 	ForwardSpeed     = 28,      -- studs/s forward along wall
-	UpForce          = 6,       -- studs/s upward drift (prevents immediate fall)
+	UpForce          = 0,       -- 0 = flat wall run at same Y; gravity is cancelled by VectorForce
 	TiltAngle        = 12,      -- degrees character tilts toward wall
 	MaxDuration      = 2.8,     -- seconds before forced detach
 
