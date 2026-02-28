@@ -31,7 +31,7 @@ for _, remoteName in pairs(CombatSettings.Remotes) do
 	_ensureRemote(remoteName)
 end
 
-for _, remoteName in pairs(CombatSettings.Remotes) do
+for _, remoteName in pairs(MovementSettings.Remotes) do
 	_ensureRemote(remoteName)
 end
 
