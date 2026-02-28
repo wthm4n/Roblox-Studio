@@ -8,25 +8,29 @@
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local CombatSettings    = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("CombatSettings"))
+local CombatSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("CombatSettings"))
 
 -- Create Remotes folder if it doesn't exist
 local folder = ReplicatedStorage:FindFirstChild("Remotes")
 if not folder then
 	folder = Instance.new("Folder")
-	folder.Name   = "Remotes"
+	folder.Name = "Remotes"
 	folder.Parent = ReplicatedStorage
 end
 
 local function _ensureRemote(name: string)
 	if not folder:FindFirstChild(name) then
-		local re      = Instance.new("RemoteEvent")
-		re.Name       = name
-		re.Parent     = folder
+		local re = Instance.new("RemoteEvent")
+		re.Name = name
+		re.Parent = folder
 	end
 end
 
 -- Create every remote declared in CombatSettings
+for _, remoteName in pairs(CombatSettings.Remotes) do
+	_ensureRemote(remoteName)
+end
+
 for _, remoteName in pairs(CombatSettings.Remotes) do
 	_ensureRemote(remoteName)
 end
