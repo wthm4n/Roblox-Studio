@@ -54,7 +54,8 @@ local function clearDebugParts(npcId: string)
 	local sub = folder:FindFirstChild(npcId)
 	if sub then sub:ClearAllChildren() end
 end
-
+-- ─── Config references ────────────────────────────────────────────────────
+-- These are just for easy reference while coding. Adjust values in Config.lua.
 local function drawWaypoints(npcId: string, waypoints: { PathWaypoint })
 	if not Config.Debug.Enabled or not Config.Debug.ShowPath then return end
 	local folder = getDebugFolder()
@@ -314,7 +315,7 @@ function PathfindingController:_requestCompute(destination: Vector3?)
 	end)
 end
 
--- Unstick: path to a random point nearby, then resume original destination
+-- Unstick: path to a random point nearby, then resume original de.Debugstination
 function PathfindingController:_unstick()
 	if not self._destination then return end
 
