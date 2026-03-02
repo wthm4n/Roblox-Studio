@@ -240,37 +240,95 @@ local function _tickLocomotion()
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  CAMERA ROLL SYSTEM
---  FIX 3: Slower spring speed (8 vs 14), smaller angles (3deg vs 5deg),
---  longer return delay, and no snap on zero return.
+--  CAMERA ROLL SYSTEM  (spring-based, no per-frame delta accumulation)
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local _camRoll       = 0
-local _camRollTarget = 0
-local ROLL_SPEED     = 8  -- lower = smoother lerp
+local _camRoll        = 0       -- current roll in radians
+local _camRollVel     = 0       -- spring velocity
+local _camRollTarget  = 0       -- target roll in radians
+
+local SPRING_STIFFNESS = 12     -- higher = snappier
+local SPRING_DAMPING   = 6      -- higher = less bounce (critically damped ~= 2*sqrt(stiffness))
 
 local function _setRoll(r: number)
 	_camRollTarget = r
 end
 
 local function _tickCamera(dt: number)
-	local diff = _camRollTarget - _camRoll
-	if math.abs(diff) < 0.0001 then
-		-- Cleanly zero out any residual roll without snapping
-		if math.abs(_camRoll) > 0.0001 then
-			Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, -_camRoll)
-			_camRoll = 0
-		end
-		return
+	-- Spring simulation: force = stiffness*(target-current) - damping*velocity
+	local force    = SPRING_STIFFNESS * (_camRollTarget - _camRoll) - SPRING_DAMPING * _camRollVel
+	_camRollVel    = _camRollVel + force * dt
+	_camRoll       = _camRoll   + _camRollVel * dt
+
+	-- Snap to zero when effectively settled to avoid residual drift
+	if math.abs(_camRoll) < 0.0002 and math.abs(_camRollVel) < 0.0002 and _camRollTarget == 0 then
+		_camRoll    = 0
+		_camRollVel = 0
 	end
-	local prev = _camRoll
-	_camRoll = _camRoll + diff * math.min(1, dt * ROLL_SPEED)
-	Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, _camRoll - prev)
+
+	-- Write roll into camera using its OWN up/right axes, not accumulated deltas
+	local cf  = Camera.CFrame
+	local pos = cf.Position
+	local look = cf.LookVector
+	local right = cf.RightVector
+	-- Reconstruct CFrame with roll baked in cleanly each frame
+	local up = right:Cross(look):Lerp(Vector3.new(0,1,0), 0) -- world-relative up
+	Camera.CFrame = CFrame.fromMatrix(pos, right, cf.UpVector)
+		* CFrame.Angles(0, 0, _camRoll)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  DASH EFFECT
 -- ══════════════════════════════════════════════════════════════════════════════
+
+-- FOV spring state
+local _fovBase        = 70    -- your default FOV
+local _fovCurrent     = 70
+local _fovVel         = 0
+local _fovTarget      = 70
+
+local FOV_STIFFNESS   = 18
+local FOV_DAMPING     = 7
+
+local function _setFOV(target: number)
+	_fovTarget = target
+end
+
+local function _tickFOV(dt: number)
+	local force = FOV_STIFFNESS * (_fovTarget - _fovCurrent) - FOV_DAMPING * _fovVel
+	_fovVel     = _fovVel    + force * dt
+	_fovCurrent = _fovCurrent + _fovVel * dt
+
+	if math.abs(_fovCurrent - _fovBase) < 0.05 and math.abs(_fovVel) < 0.05 and _fovTarget == _fovBase then
+		_fovCurrent = _fovBase
+		_fovVel     = 0
+	end
+
+	Camera.FieldOfView = _fovCurrent
+end
+
+-- Vertical pitch spring (tilt up/down on dash)
+local _pitchOffset = 0
+local _pitchVel    = 0
+local _pitchTarget = 0
+
+local PITCH_STIFFNESS = 14
+local PITCH_DAMPING   = 6
+
+local function _setPitch(target: number)
+	_pitchTarget = target
+end
+
+local function _tickPitch(dt: number)
+	local force = PITCH_STIFFNESS * (_pitchTarget - _pitchOffset) - PITCH_DAMPING * _pitchVel
+	_pitchVel    = _pitchVel    + force * dt
+	_pitchOffset = _pitchOffset + _pitchVel * dt
+
+	if math.abs(_pitchOffset) < 0.0002 and math.abs(_pitchVel) < 0.0002 and _pitchTarget == 0 then
+		_pitchOffset = 0
+		_pitchVel    = 0
+	end
+end
 
 RE_DashEffect.OnClientEvent:Connect(function(player: Player, direction: string)
 	local char = player.Character
@@ -295,13 +353,49 @@ RE_DashEffect.OnClientEvent:Connect(function(player: Player, direction: string)
 
 	if player ~= LocalPlayer then return end
 
-	-- FIX 3: Reduced roll angle (3deg), slower return (duration + 0.2s)
-	local roll = direction == "Left"  and math.rad(3)
-	          or direction == "Right" and math.rad(-3)
-	          or nil
-	if roll then
-		_setRoll(roll)
-		task.delay(DC.Duration + 0.2, function() _setRoll(0) end)
+	local dur = DC.Duration
+
+	if direction == "Forward" then
+		-- Forward: FOV surge forward, slight downward dip then back (speed tunnel feel)
+		_setFOV(_fovBase + 18)
+		_setPitch(math.rad(-2.5))
+		_setRoll(0)
+		task.delay(dur + 0.15, function()
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
+
+	elseif direction == "Backward" then
+		-- Backward: FOV pulls in (zooms out slightly), head tilts back
+		_setFOV(_fovBase - 8)
+		_setPitch(math.rad(3))
+		_setRoll(0)
+		task.delay(dur + 0.2, function()
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
+
+	elseif direction == "Left" then
+		-- Left: roll tilts left, slight FOV bump, small upward pitch
+		_setRoll(math.rad(7))
+		_setFOV(_fovBase + 8)
+		_setPitch(math.rad(-1))
+		task.delay(dur + 0.25, function()
+			_setRoll(0)
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
+
+	elseif direction == "Right" then
+		-- Right: mirror of left
+		_setRoll(math.rad(-7))
+		_setFOV(_fovBase + 8)
+		_setPitch(math.rad(-1))
+		task.delay(dur + 0.25, function()
+			_setRoll(0)
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
 	end
 end)
 
@@ -355,7 +449,9 @@ RE_WallRunStart.OnClientEvent:Connect(function(player: Player, side: string)
 		_isWallRunning = true
 		_stopLoco()
 		_play(animId, 0.1, Enum.AnimationPriority.Action2)
-		_setRoll((side == "Right") and math.rad(-WC.TiltAngle * 0.6) or math.rad(WC.TiltAngle * 0.6))
+		-- Gentle roll: spring will ease into this smoothly
+		local targetRoll = (side == "Right") and math.rad(-6) or math.rad(6)
+		_setRoll(targetRoll)
 	else
 		_playRemote(char, animId, Enum.AnimationPriority.Action2, 0.1)
 	end
@@ -364,9 +460,9 @@ end)
 RE_WallRunEnd.OnClientEvent:Connect(function(player: Player)
 	if player == LocalPlayer then
 		_isWallRunning = false
-		_stop(Anims.WallRunLeft,  0.2)
-		_stop(Anims.WallRunRight, 0.2)
-		_setRoll(0)
+		_stop(Anims.WallRunLeft,  0.25)
+		_stop(Anims.WallRunRight, 0.25)
+		_setRoll(0)  -- spring eases back, no snap
 	else
 		local char = player.Character
 		if not char then return end
@@ -376,13 +472,12 @@ RE_WallRunEnd.OnClientEvent:Connect(function(player: Player)
 			for _, t in ipairs(anim:GetPlayingAnimationTracks()) do
 				local id = t.Animation and t.Animation.AnimationId
 				if id == Anims.WallRunLeft or id == Anims.WallRunRight then
-					t:Stop(0.2)
+					t:Stop(0.25)
 				end
 			end
 		end
 	end
 end)
-
 -- ══════════════════════════════════════════════════════════════════════════════
 --  ENERGY SYNC
 -- ══════════════════════════════════════════════════════════════════════════════
