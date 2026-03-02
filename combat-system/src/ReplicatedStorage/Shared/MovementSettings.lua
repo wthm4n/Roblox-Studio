@@ -114,7 +114,7 @@ MovementSettings.WallRun = {
 	MaxDuration     = 2.8,
 	MaxSlopeAngle   = 25,
 	TiltAngle       = 10,
-	CoyoteTime      = 0.15,   -- can attach for this long after leaving a wall
+	CoyoteTime      = -0.15,   -- can attach for this long after leaving a wall
 }
 
 -- ══════════════════════════════════════════
