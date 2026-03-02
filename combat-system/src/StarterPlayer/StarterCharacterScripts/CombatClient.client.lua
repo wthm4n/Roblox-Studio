@@ -1,16 +1,18 @@
 --[[
-	CombatClient.lua  (CLIENT — LocalScript inside StarterPlayerScripts or StarterCharacterScripts)
-	
-	Responsibilities:
-	  • Listen for mouse / tap input → fire UsedM1 remote (intent only, no hit data)
-	  • ApplyHitEffect  → play hit-reaction / swing animation on correct character
-	  • HitConfirm      → (a) flash red Highlight on victim (all clients)
-	                       (b) play hit sound on attacker's client only
-	                       (c) camera shake on attacker's client only
-	                       (d) FOV kick on attacker's client only        [NEW]
-	                       (e) camera punch toward target on attacker    [NEW]
+	CombatClient.lua  (CLIENT)
 
-	Place in: StarterPlayerScripts/CombatClient  (or StarterCharacterScripts)
+	ARCHITECTURE — "Optimistic Client" (how TSB / JJS work):
+	─────────────────────────────────────────────────────────
+	OLD (laggy):
+	  Click → FireServer → wait RTT → server task.delay(HitFrame)
+	       → FireAllClients(anim) → client FINALLY sees animation
+	  Result: anim starts 200-500ms after click. Feels broken.
+
+	NEW (instant):
+	  Click → play anim + sound + camera effects IMMEDIATELY (frame 0)
+	       → FireServer() in parallel  ← server validates + deals damage only
+	  Server → FireAllClients(victim, reactionAnim) for hit reactions + highlight
+	  Result: attacker sees zero latency. Server is still fully authoritative.
 ]]
 
 -- ── Services ──────────────────────────────────────────────────────────────────
@@ -18,10 +20,9 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService  = game:GetService("UserInputService")
 local RunService        = game:GetService("RunService")
-local TweenService      = game:GetService("TweenService")
 
-local LocalPlayer  = Players.LocalPlayer
-local Camera       = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+local Camera      = workspace.CurrentCamera
 
 -- ── Shared config ─────────────────────────────────────────────────────────────
 local Shared         = ReplicatedStorage:WaitForChild("Shared")
@@ -29,188 +30,87 @@ local CombatSettings = require(Shared:WaitForChild("CombatSettings"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 local RemotesFolder     = ReplicatedStorage:WaitForChild("Remotes")
-local RE_UsedM1         = RemotesFolder:WaitForChild(CombatSettings.Remotes.UsedM1)        :: RemoteEvent
-local RE_ApplyHitEffect = RemotesFolder:WaitForChild(CombatSettings.Remotes.ApplyHitEffect) :: RemoteEvent
-local RE_HitConfirm     = RemotesFolder:WaitForChild(CombatSettings.Remotes.HitConfirm)     :: RemoteEvent
-local RE_StunApplied    = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunApplied)    :: RemoteEvent
-local RE_StunReleased   = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunReleased)   :: RemoteEvent
-local RE_TechRoll       = RemotesFolder:WaitForChild(CombatSettings.Remotes.TechRoll)       :: RemoteEvent
-local RE_Ragdoll        = RemotesFolder:WaitForChild(CombatSettings.Remotes.Ragdoll)        :: RemoteEvent
-local RE_RagdollEnd     = RemotesFolder:WaitForChild(CombatSettings.Remotes.RagdollEnd)     :: RemoteEvent
+local RE_UsedM1         = RemotesFolder:WaitForChild(CombatSettings.Remotes.UsedM1)
+local RE_ApplyHitEffect = RemotesFolder:WaitForChild(CombatSettings.Remotes.ApplyHitEffect)
+local RE_HitConfirm     = RemotesFolder:WaitForChild(CombatSettings.Remotes.HitConfirm)
+local RE_StunApplied    = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunApplied)
+local RE_StunReleased   = RemotesFolder:WaitForChild(CombatSettings.Remotes.StunReleased)
+local RE_TechRoll       = RemotesFolder:WaitForChild(CombatSettings.Remotes.TechRoll)
+local RE_Ragdoll        = RemotesFolder:WaitForChild(CombatSettings.Remotes.Ragdoll)
+local RE_RagdollEnd     = RemotesFolder:WaitForChild(CombatSettings.Remotes.RagdollEnd)
 
--- ── Local state ───────────────────────────────────────────────────────────────
-local _lastM1Time = -math.huge
-local ANIM_CACHE: { [string]: { [string]: AnimationTrack } } = {}
-
--- Track active highlight per character so we don't stack them
-local _activeHighlights: { [Model]: Highlight } = {}
-
--- ── Stun state (local player only) ────────────────────────────────────────────
+-- ── State ─────────────────────────────────────────────────────────────────────
+local _comboIndex       = 0
+local _lastM1Time       = -math.huge
 local _locallyStunned   = false
 local _locallyRagdolled = false
+local _lastTechRoll     = -math.huge
+local TECH_ROLL_KEY     = Enum.KeyCode[CombatSettings.Stun.TechRoll.Key] or Enum.KeyCode.Q
 
-local _lastTechRoll   = -math.huge
-local TECH_ROLL_KEY   = Enum.KeyCode[CombatSettings.Stun.TechRoll.Key] or Enum.KeyCode.Q
+-- ── Caches ────────────────────────────────────────────────────────────────────
+local ANIM_CACHE: { [string]: { [string]: AnimationTrack } } = {}
+local _activeHighlights: { [Model]: Highlight } = {}
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  FOV KICK  [NEW]
---
---  On hit confirm, spike FOV upward then spring it back to baseline.
---  We track a target and lerp toward it each RenderStepped so there's no
---  TweenService fighting the camera — same pattern as the existing roll system.
---
---  Profiles scale with combo index so the finisher feels distinctly heavier.
+--  LOCAL PLAYER ANIMATOR
+--  Drives the local player's swing anims directly, with zero server wait.
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local FOV_BASE    = 70   -- your game's resting FOV; adjust to match your camera setup
-local _fovCurrent = FOV_BASE
-local _fovTarget  = FOV_BASE
+local _localAnimator: Animator? = nil
+local _localTracks: { [string]: AnimationTrack } = {}
 
--- Per-combo: how many degrees to kick out, and how fast to return (lerp speed)
-local FOV_KICK_PROFILES = {
-	[1] = { Kick = 6,  ReturnSpeed = 14 },
-	[2] = { Kick = 7,  ReturnSpeed = 13 },
-	[3] = { Kick = 8,  ReturnSpeed = 12 },
-	[4] = { Kick = 10, ReturnSpeed = 11 },
-	[5] = { Kick = 14, ReturnSpeed = 9  },  -- finisher — slower, punchier return
-}
-
-local function _triggerFOVKick(comboIndex: number)
-	local profile = FOV_KICK_PROFILES[comboIndex] or FOV_KICK_PROFILES[1]
-	-- Spike immediately; _tickFOV will lerp it back to base
-	_fovCurrent = FOV_BASE + profile.Kick
-	_fovTarget  = FOV_BASE
-	Camera.FieldOfView = _fovCurrent
+local function _setupLocalAnimator(character: Model)
+	_localTracks   = {}
+	_localAnimator = nil
+	local hum = character:WaitForChild("Humanoid")
+	_localAnimator = hum:WaitForChild("Animator") :: Animator
 end
 
-local function _tickFOV(dt: number)
-	if math.abs(_fovCurrent - _fovTarget) < 0.05 then
-		_fovCurrent = _fovTarget
-		Camera.FieldOfView = _fovCurrent
-		return
+local function _getLocalTrack(animId: string): AnimationTrack?
+	if not _localAnimator then return nil end
+	if _localTracks[animId] then return _localTracks[animId] end
+	local anim       = Instance.new("Animation")
+	anim.AnimationId = animId
+	local track      = _localAnimator:LoadAnimation(anim)
+	anim:Destroy()
+	_localTracks[animId] = track
+	return track
+end
+
+local function _preloadSwingAnims()
+	for i = 1, 5 do
+		local data = CombatSettings.Animations["M" .. i]
+		if data and data.Id then _getLocalTrack(data.Id) end
 	end
-	local comboIndex = 1  -- use slowest speed as default for the lerp tick
-	-- (speed set per-kick; we keep the last-used profile's return speed)
-	-- Simple exponential decay toward base — always snappy enough
-	_fovCurrent = _fovCurrent + (_fovTarget - _fovCurrent) * math.min(1, dt * 12)
-	Camera.FieldOfView = _fovCurrent
 end
 
--- Store return speed separately so the RenderStepped tick can use it
-local _fovReturnSpeed = 12
-
-local function _triggerFOVKickFull(comboIndex: number)
-	local profile = FOV_KICK_PROFILES[comboIndex] or FOV_KICK_PROFILES[1]
-	_fovCurrent     = FOV_BASE + profile.Kick
-	_fovTarget      = FOV_BASE
-	_fovReturnSpeed = profile.ReturnSpeed
-	Camera.FieldOfView = _fovCurrent
-end
-
--- Override the simple tick with the speed-aware version
-local function _tickFOVFull(dt: number)
-	if math.abs(_fovCurrent - _fovTarget) < 0.05 then
-		_fovCurrent = _fovTarget
-		Camera.FieldOfView = _fovCurrent
-		return
-	end
-	_fovCurrent = _fovCurrent + (_fovTarget - _fovCurrent) * math.min(1, dt * _fovReturnSpeed)
-	Camera.FieldOfView = _fovCurrent
-end
-
--- ══════════════════════════════════════════════════════════════════════════════
---  CAMERA PUNCH  [NEW]
---
---  On hit confirm (attacker only), nudge the camera forward along its LookVector
---  then spring it back using a simple spring simulation.
---
---  We apply the punch as a delta on Camera.CFrame each frame so we're not
---  fighting Roblox's camera controller — only the offset changes, not the
---  full position/orientation that the controller owns.
---
---  "Forward punch" = positive Z offset in camera space → feels like the camera
---  lurches at the target, then snaps back.
--- ══════════════════════════════════════════════════════════════════════════════
-
--- Spring state — tracks a 1D offset along camera look direction
-local _punchOffset   = 0    -- current applied forward offset (studs)
-local _punchVelocity = 0    -- spring velocity
-
--- Spring constants (tweak for feel)
-local PUNCH_STIFFNESS = 280   -- how fast it returns to rest
-local PUNCH_DAMPING   = 22    -- how much oscillation damping (higher = less bouncy)
-
--- Per-combo: how far forward to kick the camera (studs)
-local PUNCH_PROFILES = {
-	[1] = 0.18,
-	[2] = 0.20,
-	[3] = 0.24,
-	[4] = 0.30,
-	[5] = 0.45,   -- finisher
-}
-
-local function _triggerCameraPunch(comboIndex: number)
-	local strength = PUNCH_PROFILES[comboIndex] or PUNCH_PROFILES[1]
-	-- Give the spring an instant velocity kick; it will overshoot slightly then settle.
-	-- The "overshoot" IS the punch feel — camera darts forward then snaps back.
-	_punchVelocity = _punchVelocity + strength * 60   -- impulse (units/s)
-end
-
--- Previous offset we applied so we can undo it and re-apply the new one (delta pattern)
-local _punchApplied = 0
-
-local function _tickCameraPunch(dt: number)
-	-- Spring formula: F = -k*x - d*v
-	local force = (-PUNCH_STIFFNESS * _punchOffset) + (-PUNCH_DAMPING * _punchVelocity)
-	_punchVelocity = _punchVelocity + force * dt
-	_punchOffset   = _punchOffset   + _punchVelocity * dt
-
-	-- Clamp to avoid exploding on very large dt spikes
-	_punchOffset = math.clamp(_punchOffset, -2, 2)
-
-	-- Apply delta: undo old offset, apply new offset along camera LookVector
-	local delta = _punchOffset - _punchApplied
-	_punchApplied = _punchOffset
-
-	-- Only bother if the delta is meaningful
-	if math.abs(delta) > 0.0001 then
-		-- CFrame.new with a vector in camera-local space:
-		-- LookVector is -Z in Roblox's CFrame convention, so we negate
-		Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, -delta)
-	end
-
-	-- Dampen to rest so floating point doesn't accumulate forever
-	if math.abs(_punchOffset) < 0.0005 and math.abs(_punchVelocity) < 0.001 then
-		-- Undo any residual and zero out
-		if math.abs(_punchApplied) > 0.0001 then
-			Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, _punchApplied)
+local function _stopAllSwingAnims()
+	for i = 1, 5 do
+		local data = CombatSettings.Animations["M" .. i]
+		if data and data.Id then
+			local t = _localTracks[data.Id]
+			if t and t.IsPlaying then t:Stop(0.05) end
 		end
-		_punchOffset   = 0
-		_punchVelocity = 0
-		_punchApplied  = 0
 	end
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  ANIMATION HELPERS
+--  REMOTE PLAYER ANIMATOR  (other players' anims + hit reactions)
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _getTrack(character: Model, animId: string): AnimationTrack?
-	local humanoid  = character:FindFirstChildOfClass("Humanoid")
-	local animator  = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	local hum      = character:FindFirstChildOfClass("Humanoid")
+	local animator = hum and hum:FindFirstChildOfClass("Animator")
 	if not animator then return nil end
-
-	local charName = character.Name
-	if not ANIM_CACHE[charName] then ANIM_CACHE[charName] = {} end
-
-	if not ANIM_CACHE[charName][animId] then
-		local anim           = Instance.new("Animation")
-		anim.AnimationId     = animId
-		ANIM_CACHE[charName][animId] = animator:LoadAnimation(anim)
+	local name = character.Name
+	if not ANIM_CACHE[name] then ANIM_CACHE[name] = {} end
+	if not ANIM_CACHE[name][animId] then
+		local anim       = Instance.new("Animation")
+		anim.AnimationId = animId
+		ANIM_CACHE[name][animId] = animator:LoadAnimation(anim)
 		anim:Destroy()
 	end
-
-	return ANIM_CACHE[charName][animId]
+	return ANIM_CACHE[name][animId]
 end
 
 local function _clearCache(character: Model)
@@ -222,319 +122,310 @@ local function _clearCache(character: Model)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  HIT SOUND
+--  FOV KICK
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local function _playHitSound(comboIndex: number)
-	local soundId = CombatSettings.Audio["M" .. tostring(comboIndex) .. "Sound"]
-		or CombatSettings.Audio.M1Sound
+local FOV_BASE        = 70
+local _fovCurrent     = FOV_BASE
+local _fovTarget      = FOV_BASE
+local _fovReturnSpeed = 12
 
-	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-	local sound       = Instance.new("Sound")
-	sound.SoundId     = soundId
-	sound.Volume      = 1.0
-	sound.RollOffMode = Enum.RollOffMode.InverseTapered
-	sound.RollOffMaxDistance = 50
-	sound.Parent = hrp or workspace
-	sound:Play()
-	game:GetService("Debris"):AddItem(sound, 3)
+local FOV_PROFILES = {
+	[1]={Kick=6,ReturnSpeed=14}, [2]={Kick=7,ReturnSpeed=13},
+	[3]={Kick=8,ReturnSpeed=12}, [4]={Kick=10,ReturnSpeed=11},
+	[5]={Kick=14,ReturnSpeed=9},
+}
+
+local function _triggerFOVKick(idx: number)
+	local p = FOV_PROFILES[idx] or FOV_PROFILES[1]
+	_fovCurrent = FOV_BASE + p.Kick; _fovTarget = FOV_BASE
+	_fovReturnSpeed = p.ReturnSpeed; Camera.FieldOfView = _fovCurrent
+end
+
+local function _tickFOV(dt: number)
+	if math.abs(_fovCurrent - _fovTarget) < 0.05 then
+		_fovCurrent = _fovTarget; Camera.FieldOfView = _fovCurrent; return
+	end
+	_fovCurrent = _fovCurrent + (_fovTarget - _fovCurrent) * math.min(1, dt * _fovReturnSpeed)
+	Camera.FieldOfView = _fovCurrent
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  RED HIGHLIGHT FLASH
+--  CAMERA PUNCH  (spring)
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local HL_CFG = CombatSettings.HitHighlight
+local _punchOffset=0; local _punchVelocity=0; local _punchApplied=0
+local PUNCH_K=280; local PUNCH_D=22
+local PUNCH_PROFILES={[1]=0.18,[2]=0.20,[3]=0.24,[4]=0.30,[5]=0.45}
 
-local function _flashHighlight(victimChar: Model)
-	local existing = _activeHighlights[victimChar]
-	if existing then
-		existing:Destroy()
-		_activeHighlights[victimChar] = nil
+local function _triggerCameraPunch(idx: number)
+	_punchVelocity = _punchVelocity + (PUNCH_PROFILES[idx] or 0.18) * 60
+end
+
+local function _tickCameraPunch(dt: number)
+	local f = (-PUNCH_K * _punchOffset) + (-PUNCH_D * _punchVelocity)
+	_punchVelocity = _punchVelocity + f * dt
+	_punchOffset   = math.clamp(_punchOffset + _punchVelocity * dt, -2, 2)
+	local delta = _punchOffset - _punchApplied; _punchApplied = _punchOffset
+	if math.abs(delta) > 0.0001 then
+		Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, -delta)
 	end
-
-	local hl                    = Instance.new("Highlight")
-	hl.FillColor                = HL_CFG.FillColor
-	hl.OutlineColor             = HL_CFG.OutlineColor
-	hl.FillTransparency         = HL_CFG.FillTransparency
-	hl.OutlineTransparency      = HL_CFG.OutlineTransparency
-	hl.Adornee                  = victimChar
-	hl.DepthMode                = Enum.HighlightDepthMode.Occluded
-	hl.Parent                   = victimChar
-
-	_activeHighlights[victimChar] = hl
-
-	task.delay(HL_CFG.Duration, function()
-		if _activeHighlights[victimChar] == hl then
-			hl:Destroy()
-			_activeHighlights[victimChar] = nil
+	if math.abs(_punchOffset) < 0.0005 and math.abs(_punchVelocity) < 0.001 then
+		if math.abs(_punchApplied) > 0.0001 then
+			Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, _punchApplied)
 		end
+		_punchOffset=0; _punchVelocity=0; _punchApplied=0
+	end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  CAMERA SHAKE
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local _shakePower=0; local _shakeFreq=18; local _shakeTimer=0; local _shakeDurLeft=0
+
+local function _triggerCameraShake(idx: number)
+	local p = CombatSettings.CameraShake[idx] or CombatSettings.CameraShake[1]
+	_shakePower = math.max(_shakePower, p.Magnitude)
+	_shakeFreq  = p.Frequency; _shakeDurLeft = p.Duration; _shakeTimer = 0
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  HIT SOUND
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local function _playHitSound(idx: number)
+	local id  = CombatSettings.Audio["M"..idx.."Sound"] or CombatSettings.Audio.M1Sound
+	local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+	local snd = Instance.new("Sound")
+	snd.SoundId=id; snd.Volume=1.0
+	snd.RollOffMode=Enum.RollOffMode.InverseTapered; snd.RollOffMaxDistance=50
+	snd.Parent = hrp or workspace; snd:Play()
+	game:GetService("Debris"):AddItem(snd, 3)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  RED HIGHLIGHT
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local HL = CombatSettings.HitHighlight
+
+local function _flashHighlight(char: Model)
+	local ex = _activeHighlights[char]
+	if ex then ex:Destroy() end
+	local hl = Instance.new("Highlight")
+	hl.FillColor=HL.FillColor; hl.OutlineColor=HL.OutlineColor
+	hl.FillTransparency=HL.FillTransparency; hl.OutlineTransparency=HL.OutlineTransparency
+	hl.Adornee=char; hl.DepthMode=Enum.HighlightDepthMode.Occluded; hl.Parent=char
+	_activeHighlights[char] = hl
+	task.delay(HL.Duration, function()
+		if _activeHighlights[char] == hl then hl:Destroy(); _activeHighlights[char]=nil end
 	end)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  CAMERA SHAKE  (existing — unchanged)
--- ══════════════════════════════════════════════════════════════════════════════
-
-local _shakeOffset  = Vector3.zero
-local _shakePower   = 0
-local _shakeFreq    = 18
-local _shakeTimer   = 0
-local _shakeDurLeft = 0
-
-local function _triggerCameraShake(comboIndex: number)
-	local profile = CombatSettings.CameraShake[comboIndex]
-		or CombatSettings.CameraShake[1]
-
-	_shakePower   = math.max(_shakePower, profile.Magnitude)
-	_shakeFreq    = profile.Frequency
-	_shakeDurLeft = profile.Duration
-	_shakeTimer   = 0
-end
-
--- ══════════════════════════════════════════════════════════════════════════════
---  STUN REMOTE HANDLERS
--- ══════════════════════════════════════════════════════════════════════════════
-
-RE_StunApplied.OnClientEvent:Connect(function(victim: Player, _duration: number)
-	if victim ~= LocalPlayer then return end
-	_locallyStunned = true
-end)
-
-RE_StunReleased.OnClientEvent:Connect(function(victim: Player, _reason: string)
-	if victim ~= LocalPlayer then return end
-	_locallyStunned = false
-end)
-
--- ══════════════════════════════════════════════════════════════════════════════
---  RAGDOLL REMOTE HANDLERS
--- ══════════════════════════════════════════════════════════════════════════════
-
-local function _setAnimateEnabled(char: Model, enabled: boolean)
-	local animScript = char:FindFirstChild("Animate")
-	if animScript and animScript:IsA("LocalScript") then
-		animScript.Disabled = not enabled
-	end
-	local humanoid = char:FindFirstChildOfClass("Humanoid")
-	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-	if animator and not enabled then
-		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-			track:Stop(0)
-		end
-	end
-end
-
-RE_Ragdoll.OnClientEvent:Connect(function(victim: Player, _active: boolean)
-	local char = victim.Character
-	if not char then return end
-	_setAnimateEnabled(char, false)
-	if victim == LocalPlayer then
-		_locallyRagdolled = true
-		_locallyStunned   = true
-	end
-end)
-
-RE_RagdollEnd.OnClientEvent:Connect(function(victim: Player)
-	local char = victim.Character
-	if not char then return end
-	_setAnimateEnabled(char, true)
-	if victim == LocalPlayer then
-		_locallyRagdolled = false
-		_locallyStunned   = false
-	end
-end)
-
--- ══════════════════════════════════════════════════════════════════════════════
---  INPUT → INTENT
+--  M1 INPUT — zero server wait, everything is instant
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _onM1Input()
 	if _locallyStunned or _locallyRagdolled then return end
 
-	-- NOTE: We intentionally do NOT gate on a client-side cooldown timer here.
-	-- The server's AbilityController is the single source of truth for cooldown.
-	-- A client-side time gate desyncs with the server (RTT offsets the clocks),
-	-- causing the "spam then burst" pattern where clicks queue up and fire together.
-	-- The server will silently drop requests that arrive too early — that's fine.
+	-- Rate-limit FireServer calls (mirrors server cooldown, prevents flooding)
+	local now = os.clock()
+	if now - _lastM1Time < CombatSettings.Cooldowns.M1 then return end
+	_lastM1Time = now
 
 	local char = LocalPlayer.Character
-	if not char then return end
+	if not char or not _localAnimator then return end
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if not hum or hum.Health <= 0 then return end
 
-	RE_UsedM1:FireServer()
+	-- Advance combo client-side (mirrors server logic exactly)
+	_comboIndex = (_comboIndex % CombatSettings.Combo.MaxHits) + 1
+	local animKey  = "M" .. _comboIndex
+	local animData = CombatSettings.Animations[animKey]
+	if not animData then return end
 
-	-- Optimistic hit sound: play immediately on swing so feedback is instant.
-	-- We don't know the combo index here, so we read the last confirmed index
-	-- from HitConfirm to pick the right sound. For the swing itself, use a
-	-- lightweight "whoosh" if you have one — or skip and rely on HitConfirm.
-	-- (Sound is already played definitively in HitConfirm; this is just feel.)
+	-- ── INSTANT: anim + sound + camera — all happen frame 0 of click ─────────
+	_stopAllSwingAnims()
+	local track = _getLocalTrack(animData.Id)
+	if track then
+		track.Priority = Enum.AnimationPriority.Action3
+		track:Play(0.05)
+		task.delay(animData.Duration + 0.05, function()
+			if track.IsPlaying then track:Stop(0.1) end
+		end)
+	end
+
+	_playHitSound(_comboIndex)
+	_triggerCameraShake(_comboIndex)
+	_triggerFOVKick(_comboIndex)
+	_triggerCameraPunch(_comboIndex)
+
+	-- ── ASYNC: server validates and deals damage in background ────────────────
+	RE_UsedM1:FireServer()
 end
 
-UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-	if gameProcessed then return end
+-- ══════════════════════════════════════════════════════════════════════════════
+--  INPUT
+-- ══════════════════════════════════════════════════════════════════════════════
 
+UserInputService.InputBegan:Connect(function(input: InputObject, processed: boolean)
+	if processed then return end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		_onM1Input()
 	end
-
 	if input.KeyCode == TECH_ROLL_KEY and _locallyStunned then
 		local now = os.clock()
-		local cd  = CombatSettings.Stun.TechRoll.Cooldown
-		if now - _lastTechRoll >= cd then
-			_lastTechRoll = now
-			RE_TechRoll:FireServer()
+		if now - _lastTechRoll >= CombatSettings.Stun.TechRoll.Cooldown then
+			_lastTechRoll = now; RE_TechRoll:FireServer()
 		end
 	end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: ANIMATION PLAYBACK
+--  SERVER → CLIENT: ApplyHitEffect
+--  For LOCAL player: only hit reactions (swing anim already playing locally)
+--  For REMOTE players: swing anims + hit reactions
 -- ══════════════════════════════════════════════════════════════════════════════
 
-RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, comboIndex: number)
+local REACTION_KEYS = {
+	"HitReaction1","HitReaction2","HitReaction3","HitReaction4","HitReaction5",
+	"BlockingHitReaction1","BlockingHitReaction2","BlockingHitReaction3",
+	"BlockingHitReaction4","BlockingHitReaction5"
+}
+
+RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, _ci: number)
 	local character = targetPlayer.Character
 	if not character then return end
 
-	local animEntry = CombatSettings.Animations[animKey]
-	local animId: string?
+	-- Skip swing anims for local player — already playing from _onM1Input
+	local isSwing = animKey:sub(1,1) == "M" and tonumber(animKey:sub(2)) ~= nil
+	if isSwing and targetPlayer == LocalPlayer then return end
 
-	if type(animEntry) == "table" then
-		animId = animEntry.Id
-	elseif type(animEntry) == "string" then
-		animId = animEntry
-	end
+	local animEntry = CombatSettings.Animations[animKey]
+	local animId: string? = type(animEntry)=="table" and animEntry.Id or (type(animEntry)=="string" and animEntry) or nil
 	if not animId then return end
 
-	-- ── Speculative feedback on attacker's client (LOCAL PLAYER ONLY) ─────────
-	-- Fire sound/shake/FOV/punch at swing time rather than waiting for HitConfirm.
-	-- HitConfirm arrives only AFTER HitFrame + hitbox + RTT — 200-400ms delay.
-	-- HitConfirm still handles the red highlight on the victim (all clients need it).
-	local isSwingAnim = animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) ~= nil
-	if isSwingAnim and targetPlayer == LocalPlayer then
-		_playHitSound(comboIndex)
-		_triggerCameraShake(comboIndex)
-		_triggerFOVKickFull(comboIndex)
-		_triggerCameraPunch(comboIndex)
-	end
+	local isReaction = animKey:sub(1,11) == "HitReaction" or animKey:sub(1,18) == "BlockingHitReaction"
 
-	local isHitReaction = animKey:sub(1, 11) == "HitReaction"
-		or animKey:sub(1, 18) == "BlockingHitReaction"
-
-	if isHitReaction then
-		local humanoid  = character:FindFirstChildOfClass("Humanoid")
-		local animator  = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if isReaction then
+		local hum = character:FindFirstChildOfClass("Humanoid")
+		local animator = hum and hum:FindFirstChildOfClass("Animator")
 		if not animator then return end
-
-		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-			local name = track.Animation and track.Animation.AnimationId or ""
-			if name ~= animId then
-				local isReact = false
-				for _, key in ipairs({ "HitReaction1","HitReaction2","HitReaction3","HitReaction4","HitReaction5",
-					"BlockingHitReaction1","BlockingHitReaction2","BlockingHitReaction3","BlockingHitReaction4","BlockingHitReaction5" }) do
-					local data = CombatSettings.Animations[key]
-					if type(data) == "string" and data == name then
-						isReact = true
-						break
-					end
-				end
-				if isReact then track:Stop(0) end
+		-- Stop conflicting reactions
+		for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+			local id = t.Animation and t.Animation.AnimationId or ""
+			for _, k in ipairs(REACTION_KEYS) do
+				local d = CombatSettings.Animations[k]
+				if type(d)=="string" and d==id then t:Stop(0) break end
 			end
 		end
-
 		local anim = Instance.new("Animation")
 		anim.AnimationId = animId
-		local track = animator:LoadAnimation(anim)
-		anim:Destroy()
-		track.Priority = Enum.AnimationPriority.Action4
-		track:Play(0)
-		track.Stopped:Connect(function() track:Destroy() end)
+		local t = animator:LoadAnimation(anim); anim:Destroy()
+		t.Priority = Enum.AnimationPriority.Action4; t:Play(0)
+		t.Stopped:Connect(function() t:Destroy() end)
 	else
-		local track = _getTrack(character, animId)
-		if not track then return end
-
-		if animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) then
-			for i = 1, 5 do
-				local prevKey  = "M" .. tostring(i)
-				local prevData = CombatSettings.Animations[prevKey]
-				if prevData and prevKey ~= animKey then
-					local prevId    = type(prevData) == "table" and prevData.Id or prevData
-					local prevTrack = _getTrack(character, prevId)
-					if prevTrack and prevTrack.IsPlaying then
-						prevTrack:Stop(0.05)
-					end
-				end
+		-- Remote player swing
+		local t = _getTrack(character, animId)
+		if not t then return end
+		for i = 1, 5 do
+			local pk = "M"..i; local pd = CombatSettings.Animations[pk]
+			if pd and pk ~= animKey then
+				local pid = type(pd)=="table" and pd.Id or pd
+				local prev = _getTrack(character, pid)
+				if prev and prev.IsPlaying then prev:Stop(0.05) end
 			end
 		end
-
-		track:Play()
+		t:Play(0.05)
 	end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: HIT CONFIRM
+--  SERVER → CLIENT: HitConfirm  (highlight only — all feedback already fired)
 -- ══════════════════════════════════════════════════════════════════════════════
 
-RE_HitConfirm.OnClientEvent:Connect(function(_attacker: Player, victim: Player, _comboIndex: number)
-	-- Red highlight stays here: authoritative (confirmed hit only).
-	-- Sound/shake/FOV/punch moved to ApplyHitEffect (swing time) to avoid
-	-- HitFrame + hitbox + RTT delay (~200-400ms on real connections).
-	local victimChar = victim.Character
-	if victimChar then
-		_flashHighlight(victimChar)
+RE_HitConfirm.OnClientEvent:Connect(function(_attacker: Player, victim: Player, _ci: number)
+	local vc = victim.Character
+	if vc then _flashHighlight(vc) end
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  STUN / RAGDOLL
+-- ══════════════════════════════════════════════════════════════════════════════
+
+RE_StunApplied.OnClientEvent:Connect(function(victim: Player, _d: number)
+	if victim == LocalPlayer then _locallyStunned = true end
+end)
+
+RE_StunReleased.OnClientEvent:Connect(function(victim: Player, _r: string)
+	if victim == LocalPlayer then _locallyStunned = false end
+end)
+
+local function _setAnimateEnabled(char: Model, enabled: boolean)
+	local s = char:FindFirstChild("Animate")
+	if s and s:IsA("LocalScript") then s.Disabled = not enabled end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local anim = hum and hum:FindFirstChildOfClass("Animator")
+	if anim and not enabled then
+		for _, t in ipairs(anim:GetPlayingAnimationTracks()) do t:Stop(0) end
+	end
+end
+
+RE_Ragdoll.OnClientEvent:Connect(function(victim: Player, _active: boolean)
+	local char = victim.Character; if not char then return end
+	_setAnimateEnabled(char, false)
+	if victim == LocalPlayer then
+		_locallyRagdolled=true; _locallyStunned=true
+		_stopAllSwingAnims()
+	end
+end)
+
+RE_RagdollEnd.OnClientEvent:Connect(function(victim: Player)
+	local char = victim.Character; if not char then return end
+	_setAnimateEnabled(char, true)
+	if victim == LocalPlayer then
+		_locallyRagdolled=false; _locallyStunned=false
+		_comboIndex = 0  -- re-sync with server after ragdoll recovery
 	end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  MAIN RENDER LOOP  — shake + FOV tick + camera punch tick
+--  RENDER LOOP
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RunService.RenderStepped:Connect(function(dt: number)
-	-- ── Existing camera shake ────────────────────────────────────────────────
 	if _shakeDurLeft > 0 then
-		_shakeDurLeft = _shakeDurLeft - dt
-		_shakeTimer   = _shakeTimer   + dt
-
-		local progress  = math.max(0, _shakeDurLeft) / math.max(0.001, _shakeTimer + _shakeDurLeft)
-		local magnitude = _shakePower * progress
-
-		local ox = math.sin(_shakeTimer * _shakeFreq * math.pi * 2)          * magnitude
-		local oy = math.sin(_shakeTimer * _shakeFreq * math.pi * 2.3 + 1.1) * magnitude
-		_shakeOffset = Vector3.new(ox, oy, 0)
-
-		Camera.CFrame = Camera.CFrame * CFrame.new(_shakeOffset)
-	else
-		_shakeOffset = Vector3.zero
+		_shakeDurLeft = _shakeDurLeft - dt; _shakeTimer = _shakeTimer + dt
+		local prog = math.max(0,_shakeDurLeft) / math.max(0.001, _shakeTimer+_shakeDurLeft)
+		local mag  = _shakePower * prog
+		local ox = math.sin(_shakeTimer*_shakeFreq*math.pi*2) * mag
+		local oy = math.sin(_shakeTimer*_shakeFreq*math.pi*2.3+1.1) * mag
+		Camera.CFrame = Camera.CFrame * CFrame.new(ox, oy, 0)
 	end
-
-	-- ── FOV kick lerp back to base  [NEW] ───────────────────────────────────
-	_tickFOVFull(dt)
-
-	-- ── Camera punch spring  [NEW] ───────────────────────────────────────────
+	_tickFOV(dt)
 	_tickCameraPunch(dt)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  CHARACTER LIFECYCLE
+--  CHARACTER SETUP
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _onCharacterAdded(character: Model)
 	_clearCache(character)
-	-- Reset FOV so respawn doesn't inherit a mid-kick FOV state
-	_fovCurrent     = FOV_BASE
-	_fovTarget      = FOV_BASE
-	_fovReturnSpeed = 12
+	_comboIndex=0; _lastM1Time=-math.huge
+	_fovCurrent=FOV_BASE; _fovTarget=FOV_BASE; _fovReturnSpeed=12
+	_punchOffset=0; _punchVelocity=0; _punchApplied=0
 	Camera.FieldOfView = FOV_BASE
-	-- Reset punch state
-	_punchOffset   = 0
-	_punchVelocity = 0
-	_punchApplied  = 0
+
+	_setupLocalAnimator(character)
+	_preloadSwingAnims()
+
 	character.AncestryChanged:Connect(function(_, parent)
 		if not parent then _clearCache(character) end
 	end)
 end
 
 LocalPlayer.CharacterAdded:Connect(_onCharacterAdded)
-if LocalPlayer.Character then
-	_onCharacterAdded(LocalPlayer.Character)
-end
+if LocalPlayer.Character then _onCharacterAdded(LocalPlayer.Character) end
