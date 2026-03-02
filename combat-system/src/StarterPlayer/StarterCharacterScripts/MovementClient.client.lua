@@ -1,159 +1,129 @@
 --[[
 	MovementController.client.lua  (CLIENT — LocalScript)
-	Full movement system: Idle/Walk/Run/Sprint/Dash/Slide/WallRun animations + input.
-
-	Place in: StarterPlayerScripts/MovementController  (LocalScript)
-
-	ARCHITECTURE:
-	  • We DISABLE the default Animate script entirely and own all animations here.
-	  • Sprint  : LeftControl held → boosted WalkSpeed + Run anim
-	  • Dash    : Q + WASD → fires RequestDash to server, plays directional anim
-	  • Slide   : LeftControl + S while sprinting → plays Slide anim, brief speed burst
-	  • WallRun : server detects + fires WallRunStart/End → we play the anim
-	  • Camera tilt on side dashes uses additive delta roll, NOT tweening Camera.CFrame
+	Client side of the Titanfall-tier movement system.
+	Place in: StarterPlayerScripts/MovementController
 ]]
 
-print("[CombatController] Started")
-
--- ── Services ──────────────────────────────────────────────────────────────────
 local Players           = game:GetService("Players")
 local UserInputService  = game:GetService("UserInputService")
 local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- ── Settings ──────────────────────────────────────────────────────────────────
-local Shared           = ReplicatedStorage:WaitForChild("Shared")
-local MovementSettings = require(Shared:WaitForChild("MovementSettings"))
-local DC               = MovementSettings.Dash
-local WC               = MovementSettings.WallRun
-local SC               = MovementSettings.Slide
-local Anims            = MovementSettings.Animations
+local Shared  = ReplicatedStorage:WaitForChild("Shared")
+local MS      = require(Shared:WaitForChild("MovementSettings"))
+local DC      = MS.Dash
+local WC      = MS.WallRun
+local SC      = MS.Slide
+local SP      = MS.Speed
+local Anims   = MS.Animations
 
--- ── Remotes ───────────────────────────────────────────────────────────────────
-local Remotes         = ReplicatedStorage:WaitForChild("Remotes")
-local RE_RequestDash  = Remotes:WaitForChild(MovementSettings.Remotes.RequestDash)  :: RemoteEvent
-local RE_DashEffect   = Remotes:WaitForChild(MovementSettings.Remotes.DashEffect)   :: RemoteEvent
-local RE_WallRunStart = Remotes:WaitForChild(MovementSettings.Remotes.WallRunStart) :: RemoteEvent
-local RE_WallRunEnd   = Remotes:WaitForChild(MovementSettings.Remotes.WallRunEnd)   :: RemoteEvent
+local Remotes        = ReplicatedStorage:WaitForChild("Remotes")
+local function _re(n) return Remotes:WaitForChild(n) :: RemoteEvent end
 
--- ── Local refs ────────────────────────────────────────────────────────────────
+local RE_RequestDash  = _re(MS.Remotes.RequestDash)
+local RE_RequestSlide = _re(MS.Remotes.RequestSlide)
+local RE_DashEffect   = _re(MS.Remotes.DashEffect)
+local RE_SlideStart   = _re(MS.Remotes.SlideStart)
+local RE_SlideEnd     = _re(MS.Remotes.SlideEnd)
+local RE_WallRunStart = _re(MS.Remotes.WallRunStart)
+local RE_WallRunEnd   = _re(MS.Remotes.WallRunEnd)
+local RE_EnergySync   = _re(MS.Remotes.EnergySync)
+
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  ANIMATION SYSTEM
---  We kill the default Animate script and drive every anim ourselves.
+--  ANIMATION ENGINE
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local _animator:   Animator? = nil
-local _animTracks: { [string]: AnimationTrack } = {}
+local _animator: Animator? = nil
+local _tracks: { [string]: AnimationTrack } = {}
 
-local function _killDefaultAnimate(character: Model)
-	local animate = character:FindFirstChild("Animate")
-	if animate then animate.Enabled = false end
-end
-
-local function _loadTrack(animId: string): AnimationTrack?
-	if not _animator then return nil end
-	if _animTracks[animId] then return _animTracks[animId] end
-	local anim = Instance.new("Animation")
-	anim.AnimationId = animId
-	local track = _animator:LoadAnimation(anim)
-	anim:Destroy()
-	_animTracks[animId] = track
-	return track
-end
-
-local function _preloadAll()
-	for _, id in pairs(Anims) do
-		if type(id) == "string" then
-			_loadTrack(id)
+local function _killAnimate(char: Model)
+	local a = char:FindFirstChild("Animate")
+	if a then a.Enabled = false end
+	char.ChildAdded:Connect(function(c)
+		if c.Name == "Animate" then
+			task.defer(function() if c and c.Parent then c.Enabled = false end end)
 		end
+	end)
+end
+
+local function _load(id: string): AnimationTrack?
+	if not _animator then return nil end
+	if _tracks[id] then return _tracks[id] end
+	local a = Instance.new("Animation")
+	a.AnimationId = id
+	local t = _animator:LoadAnimation(a)
+	a:Destroy()
+	_tracks[id] = t
+	return t
+end
+
+local function _preload()
+	for _, id in pairs(Anims) do
+		if type(id) == "string" then _load(id) end
 	end
 end
 
-local function _playTrack(animId: string, fadeIn: number?, priority: Enum.AnimationPriority?)
-	local track = _loadTrack(animId)
-	if not track then return end
-	if track.IsPlaying then return end
-	track.Priority = priority or Enum.AnimationPriority.Core
-	track:Play(fadeIn or 0.15)
+local function _play(id: string, fadeIn: number?, pri: Enum.AnimationPriority?)
+	local t = _load(id)
+	if not t or t.IsPlaying then return end
+	t.Priority = pri or Enum.AnimationPriority.Core
+	t:Play(fadeIn or 0.15)
 end
 
-local function _stopTrack(animId: string, fadeOut: number?)
-	local track = _animTracks[animId]
-	if track and track.IsPlaying then
-		track:Stop(fadeOut or 0.2)
-	end
+local function _stop(id: string, fadeOut: number?)
+	local t = _tracks[id]
+	if t and t.IsPlaying then t:Stop(fadeOut or 0.2) end
 end
 
-local function _stopAllLocomotion()
-	_stopTrack(Anims.Idle, 0.1)
-	_stopTrack(Anims.Walk, 0.1)
-	_stopTrack(Anims.Run,  0.1)
+local function _stopLoco()
+	_stop(Anims.Idle, 0.1)
+	_stop(Anims.Walk, 0.1)
+	_stop(Anims.Run,  0.1)
+end
+
+local function _isPlaying(id: string): boolean
+	local t = _tracks[id]
+	return t ~= nil and t.IsPlaying
+end
+
+local function _playRemote(char: Model, animId: string, pri: Enum.AnimationPriority?, fade: number?)
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local anim = hum and hum:FindFirstChildOfClass("Animator")
+	if not anim then return end
+	local a = Instance.new("Animation")
+	a.AnimationId = animId
+	local t = anim:LoadAnimation(a)
+	a:Destroy()
+	t.Priority = pri or Enum.AnimationPriority.Action2
+	t:Play(fade or 0.1)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  INPUT STATE
+--  CLIENT STATE
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local _sprintHeld    = false
 local _dashHeld      = false
-local _lastDash      = -math.huge
+local _lastDashLocal = -math.huge
+local _isDashing     = false
 local _isSliding     = false
 local _isWallRunning = false
+local _energy        = 0
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  SPRINT
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local BASE_SPEED   = 16
-local SPRINT_SPEED = 28
-
 local function _setSprint(on: boolean)
 	_sprintHeld = on
-	local character = LocalPlayer.Character
-	if not character then return end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or _isSliding then return end
-	humanoid.WalkSpeed = on and SPRINT_SPEED or BASE_SPEED
-end
-
--- ══════════════════════════════════════════════════════════════════════════════
---  SLIDE
--- ══════════════════════════════════════════════════════════════════════════════
-
-local function _startSlide()
-	if _isSliding then return end
-	local character = LocalPlayer.Character
-	if not character then return end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local hrp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not humanoid or not hrp then return end
-
-	-- Need to be moving to slide
-	local flatSpeed = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z).Magnitude
-	if flatSpeed < 5 then return end
-
-	_isSliding = true
-	_stopAllLocomotion()
-
-	humanoid.HipHeight  = SC.CrouchHipHeight
-	humanoid.WalkSpeed  = SC.Speed
-
-	_playTrack(Anims.Slide, 0.08, Enum.AnimationPriority.Action2)
-
-	task.delay(SC.Duration, function()
-		if not _isSliding then return end
-		_isSliding = false
-		local char = LocalPlayer.Character
-		local hum  = char and char:FindFirstChildOfClass("Humanoid")
-		if hum then
-			hum.HipHeight  = SC.DefaultHipHeight
-			hum.WalkSpeed  = _sprintHeld and SPRINT_SPEED or BASE_SPEED
-		end
-		_stopTrack(Anims.Slide, 0.2)
-	end)
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or _isSliding then return end
+	hum.WalkSpeed = on and SP.Sprint or SP.Walk
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -169,233 +139,331 @@ local KEY_TO_DIR: { [Enum.KeyCode]: string } = {
 
 local function _tryDash()
 	local now = os.clock()
-	if now - _lastDash < DC.Cooldown  then return end
-	if not _dashHeld                  then return end
-	if _isSliding or _isWallRunning   then return end
+	if now - _lastDashLocal < DC.Cooldown then return end
+	if not _dashHeld then return end
+	if _isSliding then return end
 
-	local character = LocalPlayer.Character
-	if not character then return end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid or humanoid.Health <= 0 then return end
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return end
 
-	local direction = "Forward"
-	for keyCode, dir in pairs(KEY_TO_DIR) do
-		if UserInputService:IsKeyDown(keyCode) then
-			direction = dir
-			break
-		end
+	local dir = "Forward"
+	for kc, d in pairs(KEY_TO_DIR) do
+		if UserInputService:IsKeyDown(kc) then dir = d break end
 	end
 
-	_lastDash = now
-	RE_RequestDash:FireServer(direction)
+	_lastDashLocal = now
+	RE_RequestDash:FireServer(dir)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  SLIDE INPUT
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local function _trySlide()
+	if _isSliding or _isWallRunning then return end
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hum or not hrp or hum.Health <= 0 then return end
+	local flat = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z).Magnitude
+	if flat < 6 then return end
+	RE_RequestSlide:FireServer()
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  INPUT BINDING
 -- ══════════════════════════════════════════════════════════════════════════════
 
-UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then return end
+UserInputService.InputBegan:Connect(function(inp, proc)
+	if proc then return end
 
-	if input.KeyCode == Enum.KeyCode.LeftControl then
+	if inp.KeyCode == Enum.KeyCode.LeftControl then
 		_setSprint(true)
 		if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-			_startSlide()
+			_trySlide()
 		end
 	end
 
-	if input.KeyCode == Enum.KeyCode.S and _sprintHeld then
-		_startSlide()
+	if inp.KeyCode == Enum.KeyCode.S and _sprintHeld then
+		_trySlide()
 	end
 
-	if input.KeyCode == DC.Key then
+	if inp.KeyCode == DC.Key then
 		_dashHeld = true
 		_tryDash()
 	end
 end)
 
-UserInputService.InputEnded:Connect(function(input, _)
-	if input.KeyCode == Enum.KeyCode.LeftControl then
-		_setSprint(false)
-	end
-	if input.KeyCode == DC.Key then
-		_dashHeld = false
-	end
+UserInputService.InputEnded:Connect(function(inp, _)
+	if inp.KeyCode == Enum.KeyCode.LeftControl then _setSprint(false) end
+	if inp.KeyCode == DC.Key then _dashHeld = false end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  LOCOMOTION TICK  (Idle / Walk / Run)
+--  LOCOMOTION TICK
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local function _tickLocomotion()
-	-- Don't fight action anims
-	if _isSliding or _isWallRunning then return end
+	if _isDashing or _isSliding or _isWallRunning then return end
 
-	local character = LocalPlayer.Character
-	if not character then return end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local hrp      = character:FindFirstChild("HumanoidRootPart") :: BasePart?
-	if not humanoid or not hrp or humanoid.Health <= 0 then return end
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local hrp = char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hum or not hrp or hum.Health <= 0 then return end
 
-	local vel       = hrp.AssemblyLinearVelocity
-	local flatSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+	local v    = hrp.AssemblyLinearVelocity
+	local flat = Vector3.new(v.X, 0, v.Z).Magnitude
 
-	-- Helper: is this specific track already playing?
-	local function playing(id)
-		local t = _animTracks[id]
-		return t and t.IsPlaying
-	end
-
-	if flatSpeed < 0.5 then
-		if not playing(Anims.Idle) then
-			_stopTrack(Anims.Walk, 0.2)
-			_stopTrack(Anims.Run,  0.2)
-			_playTrack(Anims.Idle, 0.2, Enum.AnimationPriority.Core)
+	if flat < 0.5 then
+		if not _isPlaying(Anims.Idle) then
+			_stop(Anims.Walk, 0.2)
+			_stop(Anims.Run,  0.2)
+			_play(Anims.Idle, 0.2, Enum.AnimationPriority.Core)
 		end
-	elseif _sprintHeld or flatSpeed > SPRINT_SPEED * 0.7 then
-		if not playing(Anims.Run) then
-			_stopTrack(Anims.Idle, 0.15)
-			_stopTrack(Anims.Walk, 0.15)
-			_playTrack(Anims.Run,  0.15, Enum.AnimationPriority.Core)
+	elseif _sprintHeld or flat > SP.Sprint * 0.65 then
+		if not _isPlaying(Anims.Run) then
+			_stop(Anims.Idle, 0.15)
+			_stop(Anims.Walk, 0.15)
+			_play(Anims.Run,  0.15, Enum.AnimationPriority.Core)
 		end
 	else
-		if not playing(Anims.Walk) then
-			_stopTrack(Anims.Idle, 0.15)
-			_stopTrack(Anims.Run,  0.15)
-			_playTrack(Anims.Walk, 0.15, Enum.AnimationPriority.Core)
+		if not _isPlaying(Anims.Walk) then
+			_stop(Anims.Idle, 0.15)
+			_stop(Anims.Run,  0.15)
+			_play(Anims.Walk, 0.15, Enum.AnimationPriority.Core)
 		end
 	end
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  CAMERA TILT  (side dashes + wall run)
---
---  The WRONG way: TweenService:Create(Camera, ...) or Camera.CFrame = newCF
---    → This overwrites position/look that Roblox's camera controller manages.
---    → Results in camera snapping, jitter, or spinning.
---
---  The RIGHT way: track a roll target, lerp _camRoll toward it each frame,
---    then multiply the delta onto Camera.CFrame so only the roll axis changes.
---    Roblox's controller still owns position + yaw + pitch.
+--  CAMERA SPRINGS
+--  All springs defined here so _tickCamera can call them without forward-ref errors
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local _camRoll       = 0    -- current applied roll (radians)
-local _camRollTarget = 0    -- where we're lerping to
-local ROLL_LERP_SPEED = 12  -- how snappy the lerp is
+-- Roll spring
+local _camRoll       = 0
+local _camRollVel    = 0
+local _camRollTarget = 0
+local ROLL_STIFFNESS = 12
+local ROLL_DAMPING   = 6
 
-local function _setRollTarget(rad: number)
-	_camRollTarget = rad
+local function _setRoll(r: number)
+	_camRollTarget = r
+end
+
+-- FOV spring
+local _fovBase    = 70
+local _fovCurrent = 70
+local _fovVel     = 0
+local _fovTarget  = 70
+local FOV_STIFFNESS = 18
+local FOV_DAMPING   = 7
+
+local function _setFOV(target: number)
+	_fovTarget = target
+end
+
+local function _tickFOV(dt: number)
+	local force = FOV_STIFFNESS * (_fovTarget - _fovCurrent) - FOV_DAMPING * _fovVel
+	_fovVel     = _fovVel     + force * dt
+	_fovCurrent = _fovCurrent + _fovVel * dt
+	if math.abs(_fovCurrent - _fovBase) < 0.05 and math.abs(_fovVel) < 0.05 and _fovTarget == _fovBase then
+		_fovCurrent = _fovBase
+		_fovVel     = 0
+	end
+	Camera.FieldOfView = _fovCurrent
+end
+
+-- Pitch spring
+local _pitchOffset = 0
+local _pitchVel    = 0
+local _pitchTarget = 0
+local PITCH_STIFFNESS = 14
+local PITCH_DAMPING   = 6
+
+local function _setPitch(target: number)
+	_pitchTarget = target
+end
+
+local function _tickPitch(dt: number)
+	local force  = PITCH_STIFFNESS * (_pitchTarget - _pitchOffset) - PITCH_DAMPING * _pitchVel
+	_pitchVel    = _pitchVel    + force * dt
+	_pitchOffset = _pitchOffset + _pitchVel * dt
+	if math.abs(_pitchOffset) < 0.0002 and math.abs(_pitchVel) < 0.0002 and _pitchTarget == 0 then
+		_pitchOffset = 0
+		_pitchVel    = 0
+	end
 end
 
 local function _tickCamera(dt: number)
-	local diff = _camRollTarget - _camRoll
-	if math.abs(diff) < 0.0001 then
-		-- Snap to exactly 0 when returning to neutral so error doesn't accumulate
-		if _camRollTarget == 0 and _camRoll ~= 0 then
-			Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, -_camRoll)
-			_camRoll = 0
-		end
-		return
+	local force = ROLL_STIFFNESS * (_camRollTarget - _camRoll) - ROLL_DAMPING * _camRollVel
+	_camRollVel = _camRollVel + force * dt
+	_camRoll    = _camRoll    + _camRollVel * dt
+	if math.abs(_camRoll) < 0.0002 and math.abs(_camRollVel) < 0.0002 and _camRollTarget == 0 then
+		_camRoll = 0; _camRollVel = 0
 	end
 
-	local prev   = _camRoll
-	_camRoll     = _camRoll + diff * math.min(1, dt * ROLL_LERP_SPEED)
-	local delta  = _camRoll - prev
+	_tickFOV(dt)
 
-	-- Apply only the delta so we're not fighting the camera controller
-	Camera.CFrame = Camera.CFrame * CFrame.Angles(0, 0, delta)
+	Camera.CFrame = CFrame.fromMatrix(
+		Camera.CFrame.Position,
+		Camera.CFrame.RightVector,
+		Camera.CFrame.UpVector
+	) * CFrame.Angles(0, 0, _camRoll)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  DASH EFFECT  (fired by server → all clients)
+--  DASH EFFECT
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RE_DashEffect.OnClientEvent:Connect(function(player: Player, direction: string)
-	local character = player.Character
-	if not character then return end
+	local char = player.Character
+	if not char then return end
 
 	local animKey = DC.Animations[direction]
 	local animId  = animKey and Anims[animKey]
 
 	if animId then
 		if player == LocalPlayer then
-			_stopAllLocomotion()
-			_playTrack(animId, 0.05, Enum.AnimationPriority.Action3)
-			task.delay(DC.Duration + 0.05, function()
-				_stopTrack(animId, 0.15)
+			_isDashing = true
+			_stopLoco()
+			_play(animId, 0.05, Enum.AnimationPriority.Action3)
+			task.delay(DC.Duration + 0.08, function()
+				_isDashing = false
+				_stop(animId, 0.12)
 			end)
 		else
-			-- Remote player: play on their animator without affecting our cache
-			local hum = character:FindFirstChildOfClass("Humanoid")
-			local animator = hum and hum:FindFirstChildOfClass("Animator")
-			if animator then
-				local a = Instance.new("Animation")
-				a.AnimationId = animId
-				local t = animator:LoadAnimation(a)
-				a:Destroy()
-				t.Priority = Enum.AnimationPriority.Action3
-				t:Play(0.05)
-			end
+			_playRemote(char, animId, Enum.AnimationPriority.Action3, 0.05)
 		end
 	end
 
-	-- Camera roll (local only, side dashes only)
 	if player ~= LocalPlayer then return end
-	if direction == "Left" then
-		_setRollTarget(math.rad(5))
-		task.delay(DC.Duration, function() _setRollTarget(0) end)
+
+	local dur = DC.Duration
+
+	if direction == "Forward" then
+		_setFOV(_fovBase + 18)
+		_setPitch(math.rad(-2.5))
+		_setRoll(0)
+		task.delay(dur + 0.15, function()
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
+
+	elseif direction == "Backward" then
+		_setFOV(_fovBase - 8)
+		_setPitch(math.rad(3))
+		_setRoll(0)
+		task.delay(dur + 0.2, function()
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
+
+	elseif direction == "Left" then
+		_setRoll(math.rad(7))
+		_setFOV(_fovBase + 8)
+		_setPitch(math.rad(-1))
+		task.delay(dur + 0.25, function()
+			_setRoll(0)
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
+
 	elseif direction == "Right" then
-		_setRollTarget(math.rad(-5))
-		task.delay(DC.Duration, function() _setRollTarget(0) end)
+		_setRoll(math.rad(-7))
+		_setFOV(_fovBase + 8)
+		_setPitch(math.rad(-1))
+		task.delay(dur + 0.25, function()
+			_setRoll(0)
+			_setFOV(_fovBase)
+			_setPitch(0)
+		end)
 	end
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  WALL RUN ANIMATIONS
+--  SLIDE EFFECT
+-- ══════════════════════════════════════════════════════════════════════════════
+
+RE_SlideStart.OnClientEvent:Connect(function(player: Player)
+	local char = player.Character
+	if not char then return end
+
+	if player == LocalPlayer then
+		_isSliding = true
+		_stopLoco()
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then hum.HipHeight = SC.CrouchHipHeight end
+		_play(Anims.Slide, 0.08, Enum.AnimationPriority.Action2)
+	else
+		_playRemote(char, Anims.Slide, Enum.AnimationPriority.Action2, 0.08)
+	end
+end)
+
+RE_SlideEnd.OnClientEvent:Connect(function(player: Player)
+	local char = player.Character
+	if not char then return end
+
+	if player == LocalPlayer then
+		_isSliding = false
+		_stop(Anims.Slide, 0.2)
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.HipHeight = SC.DefaultHipHeight
+			hum.WalkSpeed = _sprintHeld and SP.Sprint or SP.Walk
+		end
+	else
+		_stop(Anims.Slide, 0.2)
+	end
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  WALL RUN EFFECT
 -- ══════════════════════════════════════════════════════════════════════════════
 
 RE_WallRunStart.OnClientEvent:Connect(function(player: Player, side: string)
-	local character = player.Character
-	if not character then return end
+	local char = player.Character
+	if not char then return end
 
 	local animId = (side == "Left") and Anims.WallRunLeft or Anims.WallRunRight
 
 	if player == LocalPlayer then
 		_isWallRunning = true
-		_stopAllLocomotion()
-		_playTrack(animId, 0.1, Enum.AnimationPriority.Action2)
-		local tilt = (side == "Right") and math.rad(-7) or math.rad(7)
-		_setRollTarget(tilt)
+		_stopLoco()
+		_play(animId, 0.1, Enum.AnimationPriority.Action2)
+		-- Roll toward the wall + slight FOV bump + gentle upward pitch (momentum feel)
+		local roll = (side == "Right") and math.rad(-6) or math.rad(6)
+		_setRoll(roll)
+		_setFOV(_fovBase + 10)
+		_setPitch(math.rad(-1.5))
 	else
-		local hum = character:FindFirstChildOfClass("Humanoid")
-		local animator = hum and hum:FindFirstChildOfClass("Animator")
-		if animator then
-			local a = Instance.new("Animation")
-			a.AnimationId = animId
-			local t = animator:LoadAnimation(a)
-			a:Destroy()
-			t.Priority = Enum.AnimationPriority.Action2
-			t:Play(0.1)
-		end
+		_playRemote(char, animId, Enum.AnimationPriority.Action2, 0.1)
 	end
 end)
 
 RE_WallRunEnd.OnClientEvent:Connect(function(player: Player)
 	if player == LocalPlayer then
 		_isWallRunning = false
-		_stopTrack(Anims.WallRunLeft,  0.2)
-		_stopTrack(Anims.WallRunRight, 0.2)
-		_setRollTarget(0)
+		_stop(Anims.WallRunLeft,  0.25)
+		_stop(Anims.WallRunRight, 0.25)
+		-- Spring everything back smoothly
+		_setRoll(0)
+		_setFOV(_fovBase)
+		_setPitch(0)
 	else
-		local character = player.Character
-		if not character then return end
-		local hum = character:FindFirstChildOfClass("Humanoid")
-		local animator = hum and hum:FindFirstChildOfClass("Animator")
-		if animator then
-			for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+		local char = player.Character
+		if not char then return end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local anim = hum and hum:FindFirstChildOfClass("Animator")
+		if anim then
+			for _, t in ipairs(anim:GetPlayingAnimationTracks()) do
 				local id = t.Animation and t.Animation.AnimationId
 				if id == Anims.WallRunLeft or id == Anims.WallRunRight then
-					t:Stop(0.2)
+					t:Stop(0.25)
 				end
 			end
 		end
@@ -403,37 +471,44 @@ RE_WallRunEnd.OnClientEvent:Connect(function(player: Player)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
+--  ENERGY SYNC
+-- ══════════════════════════════════════════════════════════════════════════════
+
+RE_EnergySync.OnClientEvent:Connect(function(energy: number)
+	_energy = energy
+	-- Hook your UI here if needed
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  CHARACTER SETUP
 -- ══════════════════════════════════════════════════════════════════════════════
 
-local function _onCharacterAdded(character: Model)
-	_animTracks    = {}
+local function _onCharacterAdded(char: Model)
+	_tracks        = {}
 	_animator      = nil
+	_isDashing     = false
 	_isSliding     = false
 	_isWallRunning = false
-	_camRoll       = 0
-	_camRollTarget = 0
 	_sprintHeld    = false
+	_camRoll       = 0
+	_camRollVel    = 0
+	_camRollTarget = 0
+	_fovCurrent    = _fovBase
+	_fovVel        = 0
+	_fovTarget     = _fovBase
+	_pitchOffset   = 0
+	_pitchVel      = 0
+	_pitchTarget   = 0
+	Camera.FieldOfView = _fovBase
 
-	local humanoid = character:WaitForChild("Humanoid") :: Humanoid
-	_animator = humanoid:WaitForChild("Animator") :: Animator
+	local hum = char:WaitForChild("Humanoid") :: Humanoid
+	_animator = hum:WaitForChild("Animator") :: Animator
 
-	-- Kill default Animate immediately
-	_killDefaultAnimate(character)
+	_killAnimate(char)
+	hum.WalkSpeed = SP.Walk
+	hum.JumpPower = 50
 
-	-- Kill it again if it gets re-added (Roblox sometimes re-parents it)
-	character.ChildAdded:Connect(function(child)
-		if child.Name == "Animate" then
-			task.defer(function()
-				if child and child.Parent then child.Enabled = false end
-			end)
-		end
-	end)
-
-	humanoid.WalkSpeed = BASE_SPEED
-	humanoid.JumpPower = 50
-
-	_preloadAll()
+	task.defer(_preload)
 end
 
 if LocalPlayer.Character then
@@ -450,4 +525,4 @@ RunService.RenderStepped:Connect(function(dt)
 	_tickCamera(dt)
 end)
 
-print("[MovementController] Ready.")
+print("[MovementController] Momentum system ready.")
