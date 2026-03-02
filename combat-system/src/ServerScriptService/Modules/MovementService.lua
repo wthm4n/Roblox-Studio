@@ -263,12 +263,30 @@ local function _endWallRun(player: Player, s: PlayerState)
 	s.WallActive = false
 
 	local hrp = _getHRP(player)
+	local hum = _getHumanoid(player)
+
 	if hrp then
-		_removeConstraints(hrp, "WallRun")
-		local look = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
-		if look.Magnitude > 0.01 then
-			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + look.Unit)
+		for _, name in ipairs({"WallRunLV", "WallRunVF", "WallRunAtt"}) do
+			local obj = hrp:FindFirstChild(name)
+			if obj then obj:Destroy() end
 		end
+
+		local flatLook = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
+		if flatLook.Magnitude > 0.01 then
+			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + flatLook.Unit)
+		end
+
+		local vel = hrp.AssemblyLinearVelocity
+		local flat = Vector3.new(vel.X, 0, vel.Z)
+		hrp.AssemblyLinearVelocity = Vector3.new(
+			flat.X * 0.85,
+			math.max(vel.Y, 0),
+			flat.Z * 0.85
+		)
+	end
+
+	if hum then
+		hum:ChangeState(Enum.HumanoidStateType.Freefall)
 	end
 
 	if _remotes.WallRunEnd then
@@ -280,7 +298,10 @@ local function _startWallRun(player: Player, s: PlayerState, side: string, norma
 	local hrp = _getHRP(player)
 	if not hrp then return end
 
-	_removeConstraints(hrp, "WallRun")
+	for _, name in ipairs({"WallRunLV", "WallRunVF", "WallRunAtt"}) do
+		local obj = hrp:FindFirstChild(name)
+		if obj then obj:Destroy() end
+	end
 
 	local now = os.clock()
 	s.WallActive = true
@@ -322,7 +343,6 @@ local function _startWallRun(player: Player, s: PlayerState, side: string, norma
 		_remotes.WallRunStart:FireAllClients(player, side)
 	end
 end
-
 local function _tickWallRun(player: Player, s: PlayerState, dt: number)
 	local hrp = _getHRP(player)
 	local hum = _getHumanoid(player)
@@ -699,4 +719,4 @@ function MovementService.init(stunModule, ragdollModule)
 	print("[MovementService] Ready.")
 end
 
-return MovementService
+return MovementService -- changes made to this file should be replicated to ClientMovementService.lua as well!
