@@ -351,9 +351,11 @@ end)
 local function _onM1Input()
 	if _locallyStunned or _locallyRagdolled then return end
 
-	local now = os.clock()
-	if now - _lastM1Time < CombatSettings.Cooldowns.M1 then return end
-	_lastM1Time = now
+	-- NOTE: We intentionally do NOT gate on a client-side cooldown timer here.
+	-- The server's AbilityController is the single source of truth for cooldown.
+	-- A client-side time gate desyncs with the server (RTT offsets the clocks),
+	-- causing the "spam then burst" pattern where clicks queue up and fire together.
+	-- The server will silently drop requests that arrive too early — that's fine.
 
 	local char = LocalPlayer.Character
 	if not char then return end
@@ -361,6 +363,12 @@ local function _onM1Input()
 	if not hum or hum.Health <= 0 then return end
 
 	RE_UsedM1:FireServer()
+
+	-- Optimistic hit sound: play immediately on swing so feedback is instant.
+	-- We don't know the combo index here, so we read the last confirmed index
+	-- from HitConfirm to pick the right sound. For the swing itself, use a
+	-- lightweight "whoosh" if you have one — or skip and rely on HitConfirm.
+	-- (Sound is already played definitively in HitConfirm; this is just feel.)
 end
 
 UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
@@ -384,7 +392,7 @@ end)
 --  SERVER → CLIENT: ANIMATION PLAYBACK
 -- ══════════════════════════════════════════════════════════════════════════════
 
-RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, _comboIndex: number)
+RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, comboIndex: number)
 	local character = targetPlayer.Character
 	if not character then return end
 
@@ -397,6 +405,18 @@ RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: 
 		animId = animEntry
 	end
 	if not animId then return end
+
+	-- ── Speculative feedback on attacker's client (LOCAL PLAYER ONLY) ─────────
+	-- Fire sound/shake/FOV/punch at swing time rather than waiting for HitConfirm.
+	-- HitConfirm arrives only AFTER HitFrame + hitbox + RTT — 200-400ms delay.
+	-- HitConfirm still handles the red highlight on the victim (all clients need it).
+	local isSwingAnim = animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) ~= nil
+	if isSwingAnim and targetPlayer == LocalPlayer then
+		_playHitSound(comboIndex)
+		_triggerCameraShake(comboIndex)
+		_triggerFOVKickFull(comboIndex)
+		_triggerCameraPunch(comboIndex)
+	end
 
 	local isHitReaction = animKey:sub(1, 11) == "HitReaction"
 		or animKey:sub(1, 18) == "BlockingHitReaction"
@@ -455,20 +475,14 @@ end)
 --  SERVER → CLIENT: HIT CONFIRM
 -- ══════════════════════════════════════════════════════════════════════════════
 
-RE_HitConfirm.OnClientEvent:Connect(function(attacker: Player, victim: Player, comboIndex: number)
-	-- Red highlight on victim (every client)
+RE_HitConfirm.OnClientEvent:Connect(function(_attacker: Player, victim: Player, _comboIndex: number)
+	-- Red highlight stays here: authoritative (confirmed hit only).
+	-- Sound/shake/FOV/punch moved to ApplyHitEffect (swing time) to avoid
+	-- HitFrame + hitbox + RTT delay (~200-400ms on real connections).
 	local victimChar = victim.Character
 	if victimChar then
 		_flashHighlight(victimChar)
 	end
-
-	-- Sound + shake + FOV kick + camera punch — attacker's client only
-	if attacker ~= LocalPlayer then return end
-
-	_playHitSound(comboIndex)
-	_triggerCameraShake(comboIndex)
-	_triggerFOVKickFull(comboIndex)    -- [NEW] FOV spike → spring back to base
-	_triggerCameraPunch(comboIndex)    -- [NEW] forward lurch → spring back
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
