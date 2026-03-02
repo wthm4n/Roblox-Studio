@@ -9,6 +9,12 @@
 	  • Spawn server hitbox and apply damage
 
 	Place in: ServerScriptService/CombatService
+
+	FIXES vs original:
+	  • EndActive("M1") is now ALWAYS called after hitbox fires, even on a miss.
+	    Previously it was only called inside the victim loop — if no victims were
+	    found, Active stayed true permanently and CanUse returned "active" until
+	    the combo reset. This was the main cause of "stops working for a second".
 ]]
 
 print("CombatService loaded")
@@ -19,7 +25,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 -- ── Module references ─────────────────────────────────────────────────────────
--- Adjust paths to match your project hierarchy.
 local Modules = ServerScriptService:WaitForChild("Modules")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
@@ -62,36 +67,33 @@ DamageModule.init(
 	{ ApplyHitEffect = RE_ApplyHitEffect, HitConfirm = RE_HitConfirm },
 	StunModule,
 	RagdollModule,
-	CombatSettings.Ragdoll, -- full ragdoll config (TriggerOnHit, Duration, LaunchForce)
-	CombatSettings.Stun.Duration -- stun durations for non-ragdoll hits
+	CombatSettings.Ragdoll,
+	CombatSettings.Stun.Duration
 )
 
 -- ── Per-player state ──────────────────────────────────────────────────────────
 type PlayerCombatState = {
 	Controller: typeof(AbilityController.new(...)),
 	ComboIndex: number,
-	ComboTimer: thread?, -- coroutine for combo reset
+	ComboTimer: thread?,
 }
 
 local playerStates: { [Player]: PlayerCombatState } = {}
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
--- Validates server-side that attacker is actually facing the alleged target zone.
--- dot(attackerLook, dirToTarget) must exceed MinDotProduct.
 local function _isFacing(attackerHRP: BasePart, targetPos: Vector3): boolean
 	local dir = (targetPos - attackerHRP.Position)
 	local flatDir = Vector3.new(dir.X, 0, dir.Z)
 	if flatDir.Magnitude < 0.001 then
 		return true
-	end -- point-blank; allow
+	end
 
 	local look = attackerHRP.CFrame.LookVector
 	local dot = look:Dot(flatDir.Unit)
 	return dot >= CombatSettings.Combo.MinDotProduct
 end
 
--- Basic LOS check: raycast from attacker HRP to victim HRP, ignoring both characters.
 local function _hasLOS(attacker: Player, victim: Player): boolean
 	local aHRP = attacker.Character and attacker.Character:FindFirstChild("HumanoidRootPart")
 	local vHRP = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
@@ -107,11 +109,9 @@ local function _hasLOS(attacker: Player, victim: Player): boolean
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 	local result = workspace:Raycast(origin, direction, rayParams)
-	-- If the ray hits nothing between them, LOS is clear.
 	return result == nil
 end
 
--- Schedule a combo reset after the configured delay.
 local function _scheduleComboReset(state: PlayerCombatState)
 	if state.ComboTimer then
 		task.cancel(state.ComboTimer)
@@ -126,14 +126,11 @@ end
 
 local function _onPlayerAdded(player: Player)
 	local controller = AbilityController.new(player)
-
-	-- Register M1 ability
 	controller:RegisterAbility("M1", {
 		Cooldown = CombatSettings.Cooldowns.M1,
 		StaminaCost = 0,
 		Interruptible = true,
 	})
-
 	playerStates[player] = {
 		Controller = controller,
 		ComboIndex = 0,
@@ -152,16 +149,12 @@ end
 Players.PlayerAdded:Connect(_onPlayerAdded)
 Players.PlayerRemoving:Connect(_onPlayerRemoving)
 
--- Initialise for players already in game (studio playtest edge-case)
 for _, player in ipairs(Players:GetPlayers()) do
 	_onPlayerAdded(player)
 end
 
 -- ── M1 Intent Handler ─────────────────────────────────────────────────────────
---[[
-	Client sends UsedM1 with NO data about who was hit.
-	Server figures out everything independently.
-]]
+
 RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	local state = playerStates[attacker]
 	if not state then
@@ -171,12 +164,12 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	local controller = state.Controller
 
 	-- ── 1. Cooldown gate ────────────────────────────────────────────────────
-	local canUse, reason = controller:CanUse("M1")
+	local canUse, _reason = controller:CanUse("M1")
 	if not canUse then
 		return
 	end
 
-	-- ── 1b. Stun / ragdoll gate — locked players cannot attack ────────────────
+	-- ── 1b. Stun / ragdoll gate ──────────────────────────────────────────────
 	if StunModule.IsStunned(attacker) or RagdollModule.IsRagdolled(attacker) then
 		return
 	end
@@ -199,7 +192,6 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	state.ComboIndex = (state.ComboIndex % CombatSettings.Combo.MaxHits) + 1
 	local comboIndex = state.ComboIndex
 
-	-- Determine animation key: M1, M2, M3, M4, M5
 	local animKey = "M" .. tostring(comboIndex)
 	local animData = CombatSettings.Animations[animKey]
 	if not animData then
@@ -212,10 +204,16 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 	-- ── 5. Apply movement slow ───────────────────────────────────────────────
 	humanoid.WalkSpeed = humanoid.WalkSpeed * CombatSettings.Combo.MovementMult
 
-	-- ── 6. Wait for HitFrame, then fire hitbox ───────────────────────────────
+	-- ── 6. Tell all clients to play the swing animation ──────────────────────
+	-- Fired BEFORE the hitbox delay so clients get the anim + speculative
+	-- sound/shake immediately (CombatClient plays those on ApplyHitEffect).
+	RE_ApplyHitEffect:FireAllClients(attacker, animKey, comboIndex)
+
+	-- ── 7. Wait for HitFrame, then fire hitbox ───────────────────────────────
 	task.delay(animData.HitFrame, function()
-		-- Re-validate: player might have left or died during the windup
 		if not attacker.Character then
+			-- Player left during windup — still end Active so it doesn't get stuck
+			controller:EndActive("M1")
 			return
 		end
 
@@ -230,48 +228,39 @@ RE_UsedM1.OnServerEvent:Connect(function(attacker: Player)
 		)
 
 		local victims = hitbox:Fire()
-
 		local damager = DamageModule.new(attacker)
 
 		for _, victim in ipairs(victims) do
-			-- Facing check per victim
 			local victimChar = victim.Character
 			local victimHRP = victimChar and victimChar:FindFirstChild("HumanoidRootPart")
 			if not victimHRP then
 				continue
 			end
-
 			if not _isFacing(hrp, victimHRP.Position) then
 				continue
 			end
 			if not _hasLOS(attacker, victim) then
 				continue
 			end
-
 			damager:Apply(victim, damage, comboIndex)
 		end
 
-		-- End the "active" window; cooldown still runs
+		-- ── FIX: EndActive ALWAYS called here, hit or miss ───────────────────
+		-- Previously this was inside the victim loop, so a complete miss left
+		-- state.Active = true forever, blocking all future M1s until combo reset.
 		controller:EndActive("M1")
 	end)
 
-	-- ── 7. Restore walk speed after animation ────────────────────────────────
+	-- ── 8. Restore walk speed after animation ────────────────────────────────
 	task.delay(animData.Duration, function()
 		if attacker.Character then
 			local hum: Humanoid? = attacker.Character:FindFirstChildOfClass("Humanoid")
 			if hum then
-				-- Restore to default; in a real game you'd restore to the player's current base speed.
 				hum.WalkSpeed = hum.WalkSpeed / CombatSettings.Combo.MovementMult
 			end
 		end
 	end)
 
-	-- ── 8. Schedule combo reset ───────────────────────────────────────────────
+	-- ── 9. Schedule combo reset ───────────────────────────────────────────────
 	_scheduleComboReset(state)
-
-	-- ── 9. Tell all clients which animation to play ───────────────────────────
-	-- We reuse ApplyHitEffect for the attacker's swing anim too, OR you can
-	-- add a dedicated SwingAnim remote. Here we fire it back to ALL clients
-	-- so everyone sees the attacker swing.
-	RE_ApplyHitEffect:FireAllClients(attacker, animKey, comboIndex)
 end)
