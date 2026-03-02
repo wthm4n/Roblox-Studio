@@ -11,6 +11,8 @@
 	Place in: ServerScriptService/CombatService
 ]]
 
+prin
+
 -- ── Services ──────────────────────────────────────────────────────────────────
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
