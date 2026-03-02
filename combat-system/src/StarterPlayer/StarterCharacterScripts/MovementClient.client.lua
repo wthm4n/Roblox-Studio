@@ -300,7 +300,6 @@ local function _tickPitch(dt: number)
 end
 
 local function _tickCamera(dt: number)
-	-- Roll spring
 	local force = ROLL_STIFFNESS * (_camRollTarget - _camRoll) - ROLL_DAMPING * _camRollVel
 	_camRollVel = _camRollVel + force * dt
 	_camRoll    = _camRoll    + _camRollVel * dt
@@ -308,15 +307,13 @@ local function _tickCamera(dt: number)
 		_camRoll = 0; _camRollVel = 0
 	end
 
-	_tickPitch(dt)
 	_tickFOV(dt)
 
-	-- Apply all offsets cleanly onto current camera CFrame each frame (no delta accumulation)
 	Camera.CFrame = CFrame.fromMatrix(
 		Camera.CFrame.Position,
 		Camera.CFrame.RightVector,
 		Camera.CFrame.UpVector
-	) * CFrame.Angles(_pitchOffset, 0, _camRoll)
+	) * CFrame.Angles(0, 0, _camRoll)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
