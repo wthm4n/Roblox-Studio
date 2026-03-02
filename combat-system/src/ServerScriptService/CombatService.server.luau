@@ -11,6 +11,7 @@
 	Place in: ServerScriptService/CombatService
 ]]
 
+print("CombatService loaded")
 
 -- ── Services ──────────────────────────────────────────────────────────────────
 local Players = game:GetService("Players")
