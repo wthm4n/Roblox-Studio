@@ -7,6 +7,8 @@
 	  • HitConfirm      → (a) flash red Highlight on victim (all clients)
 	                       (b) play hit sound on attacker's client only
 	                       (c) camera shake on attacker's client only
+	                       (d) FOV kick on attacker's client only        [NEW]
+	                       (e) camera punch toward target on attacker    [NEW]
 
 	Place in: StarterPlayerScripts/CombatClient  (or StarterCharacterScripts)
 ]]
@@ -44,17 +46,154 @@ local ANIM_CACHE: { [string]: { [string]: AnimationTrack } } = {}
 local _activeHighlights: { [Model]: Highlight } = {}
 
 -- ── Stun state (local player only) ────────────────────────────────────────────
--- Whether THIS local client is currently stunned (for input blocking + UI).
-local _locallyStunned  = false  -- is the local player currently stunned/ragdolled?
-local _locallyRagdolled = false -- is the local player currently ragdolled?
+local _locallyStunned   = false
+local _locallyRagdolled = false
 
--- Tech roll cooldown mirror (server has authoritative check too)
 local _lastTechRoll   = -math.huge
 local TECH_ROLL_KEY   = Enum.KeyCode[CombatSettings.Stun.TechRoll.Key] or Enum.KeyCode.Q
 
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  FOV KICK  [NEW]
+--
+--  On hit confirm, spike FOV upward then spring it back to baseline.
+--  We track a target and lerp toward it each RenderStepped so there's no
+--  TweenService fighting the camera — same pattern as the existing roll system.
+--
+--  Profiles scale with combo index so the finisher feels distinctly heavier.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+local FOV_BASE    = 70   -- your game's resting FOV; adjust to match your camera setup
+local _fovCurrent = FOV_BASE
+local _fovTarget  = FOV_BASE
+
+-- Per-combo: how many degrees to kick out, and how fast to return (lerp speed)
+local FOV_KICK_PROFILES = {
+	[1] = { Kick = 6,  ReturnSpeed = 14 },
+	[2] = { Kick = 7,  ReturnSpeed = 13 },
+	[3] = { Kick = 8,  ReturnSpeed = 12 },
+	[4] = { Kick = 10, ReturnSpeed = 11 },
+	[5] = { Kick = 14, ReturnSpeed = 9  },  -- finisher — slower, punchier return
+}
+
+local function _triggerFOVKick(comboIndex: number)
+	local profile = FOV_KICK_PROFILES[comboIndex] or FOV_KICK_PROFILES[1]
+	-- Spike immediately; _tickFOV will lerp it back to base
+	_fovCurrent = FOV_BASE + profile.Kick
+	_fovTarget  = FOV_BASE
+	Camera.FieldOfView = _fovCurrent
+end
+
+local function _tickFOV(dt: number)
+	if math.abs(_fovCurrent - _fovTarget) < 0.05 then
+		_fovCurrent = _fovTarget
+		Camera.FieldOfView = _fovCurrent
+		return
+	end
+	local comboIndex = 1  -- use slowest speed as default for the lerp tick
+	-- (speed set per-kick; we keep the last-used profile's return speed)
+	-- Simple exponential decay toward base — always snappy enough
+	_fovCurrent = _fovCurrent + (_fovTarget - _fovCurrent) * math.min(1, dt * 12)
+	Camera.FieldOfView = _fovCurrent
+end
+
+-- Store return speed separately so the RenderStepped tick can use it
+local _fovReturnSpeed = 12
+
+local function _triggerFOVKickFull(comboIndex: number)
+	local profile = FOV_KICK_PROFILES[comboIndex] or FOV_KICK_PROFILES[1]
+	_fovCurrent     = FOV_BASE + profile.Kick
+	_fovTarget      = FOV_BASE
+	_fovReturnSpeed = profile.ReturnSpeed
+	Camera.FieldOfView = _fovCurrent
+end
+
+-- Override the simple tick with the speed-aware version
+local function _tickFOVFull(dt: number)
+	if math.abs(_fovCurrent - _fovTarget) < 0.05 then
+		_fovCurrent = _fovTarget
+		Camera.FieldOfView = _fovCurrent
+		return
+	end
+	_fovCurrent = _fovCurrent + (_fovTarget - _fovCurrent) * math.min(1, dt * _fovReturnSpeed)
+	Camera.FieldOfView = _fovCurrent
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  CAMERA PUNCH  [NEW]
+--
+--  On hit confirm (attacker only), nudge the camera forward along its LookVector
+--  then spring it back using a simple spring simulation.
+--
+--  We apply the punch as a delta on Camera.CFrame each frame so we're not
+--  fighting Roblox's camera controller — only the offset changes, not the
+--  full position/orientation that the controller owns.
+--
+--  "Forward punch" = positive Z offset in camera space → feels like the camera
+--  lurches at the target, then snaps back.
+-- ══════════════════════════════════════════════════════════════════════════════
+
+-- Spring state — tracks a 1D offset along camera look direction
+local _punchOffset   = 0    -- current applied forward offset (studs)
+local _punchVelocity = 0    -- spring velocity
+
+-- Spring constants (tweak for feel)
+local PUNCH_STIFFNESS = 280   -- how fast it returns to rest
+local PUNCH_DAMPING   = 22    -- how much oscillation damping (higher = less bouncy)
+
+-- Per-combo: how far forward to kick the camera (studs)
+local PUNCH_PROFILES = {
+	[1] = 0.18,
+	[2] = 0.20,
+	[3] = 0.24,
+	[4] = 0.30,
+	[5] = 0.45,   -- finisher
+}
+
+local function _triggerCameraPunch(comboIndex: number)
+	local strength = PUNCH_PROFILES[comboIndex] or PUNCH_PROFILES[1]
+	-- Give the spring an instant velocity kick; it will overshoot slightly then settle.
+	-- The "overshoot" IS the punch feel — camera darts forward then snaps back.
+	_punchVelocity = _punchVelocity + strength * 60   -- impulse (units/s)
+end
+
+-- Previous offset we applied so we can undo it and re-apply the new one (delta pattern)
+local _punchApplied = 0
+
+local function _tickCameraPunch(dt: number)
+	-- Spring formula: F = -k*x - d*v
+	local force = (-PUNCH_STIFFNESS * _punchOffset) + (-PUNCH_DAMPING * _punchVelocity)
+	_punchVelocity = _punchVelocity + force * dt
+	_punchOffset   = _punchOffset   + _punchVelocity * dt
+
+	-- Clamp to avoid exploding on very large dt spikes
+	_punchOffset = math.clamp(_punchOffset, -2, 2)
+
+	-- Apply delta: undo old offset, apply new offset along camera LookVector
+	local delta = _punchOffset - _punchApplied
+	_punchApplied = _punchOffset
+
+	-- Only bother if the delta is meaningful
+	if math.abs(delta) > 0.0001 then
+		-- CFrame.new with a vector in camera-local space:
+		-- LookVector is -Z in Roblox's CFrame convention, so we negate
+		Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, -delta)
+	end
+
+	-- Dampen to rest so floating point doesn't accumulate forever
+	if math.abs(_punchOffset) < 0.0005 and math.abs(_punchVelocity) < 0.001 then
+		-- Undo any residual and zero out
+		if math.abs(_punchApplied) > 0.0001 then
+			Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, _punchApplied)
+		end
+		_punchOffset   = 0
+		_punchVelocity = 0
+		_punchApplied  = 0
+	end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  ANIMATION HELPERS
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local function _getTrack(character: Model, animId: string): AnimationTrack?
 	local humanoid  = character:FindFirstChildOfClass("Humanoid")
@@ -75,7 +214,6 @@ local function _getTrack(character: Model, animId: string): AnimationTrack?
 end
 
 local function _clearCache(character: Model)
-	-- Also clean up any leftover highlight
 	if _activeHighlights[character] then
 		_activeHighlights[character]:Destroy()
 		_activeHighlights[character] = nil
@@ -83,9 +221,9 @@ local function _clearCache(character: Model)
 	ANIM_CACHE[character.Name] = nil
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  HIT SOUND  (plays on attacker's client only, when server confirms a hit)
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  HIT SOUND
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local function _playHitSound(comboIndex: number)
 	local soundId = CombatSettings.Audio["M" .. tostring(comboIndex) .. "Sound"]
@@ -102,35 +240,30 @@ local function _playHitSound(comboIndex: number)
 	game:GetService("Debris"):AddItem(sound, 3)
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  RED HIGHLIGHT FLASH  (all clients see this on the victim)
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  RED HIGHLIGHT FLASH
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local HL_CFG = CombatSettings.HitHighlight
 
 local function _flashHighlight(victimChar: Model)
-	-- Reuse existing highlight if it's already on this character (rapid hits)
 	local existing = _activeHighlights[victimChar]
 	if existing then
-		-- Just reset the removal timer by cancelling the old task implicitly;
-		-- we'll create a new one below after re-setting properties.
 		existing:Destroy()
 		_activeHighlights[victimChar] = nil
 	end
 
-	-- Create a fresh Highlight parented inside the victim's character
 	local hl                    = Instance.new("Highlight")
 	hl.FillColor                = HL_CFG.FillColor
 	hl.OutlineColor             = HL_CFG.OutlineColor
 	hl.FillTransparency         = HL_CFG.FillTransparency
 	hl.OutlineTransparency      = HL_CFG.OutlineTransparency
-	hl.Adornee                  = victimChar   -- entire character model
+	hl.Adornee                  = victimChar
 	hl.DepthMode                = Enum.HighlightDepthMode.Occluded
 	hl.Parent                   = victimChar
 
 	_activeHighlights[victimChar] = hl
 
-	-- Auto-remove after Duration
 	task.delay(HL_CFG.Duration, function()
 		if _activeHighlights[victimChar] == hl then
 			hl:Destroy()
@@ -139,83 +272,49 @@ local function _flashHighlight(victimChar: Model)
 	end)
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  CAMERA SHAKE  (only the attacker's local client runs this)
--- ═══════════════════════════════════════════════════════════════════════════════
-
--- Pure Luau trauma-style shake — no external libraries needed.
--- We accumulate a shakeOffset that we apply to Camera.CFrame every frame.
+-- ══════════════════════════════════════════════════════════════════════════════
+--  CAMERA SHAKE  (existing — unchanged)
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local _shakeOffset  = Vector3.zero
-local _shakePower   = 0        -- current shake magnitude (decays over time)
-local _shakeFreq    = 18       -- oscillations per second
-local _shakeTimer   = 0        -- time accumulator for oscillation
-local _shakeDurLeft = 0        -- seconds remaining for this shake
-
-RunService.RenderStepped:Connect(function(dt: number)
-	if _shakeDurLeft <= 0 then
-		_shakeOffset = Vector3.zero
-		return
-	end
-
-	_shakeDurLeft = _shakeDurLeft - dt
-	_shakeTimer   = _shakeTimer   + dt
-
-	-- Smooth decay: power falls off as duration runs out
-	local progress  = math.max(0, _shakeDurLeft) / math.max(0.001, _shakeTimer + _shakeDurLeft)
-	local magnitude = _shakePower * progress
-
-	-- Oscillate on X/Y using sin at slightly different frequencies for organicness
-	local ox = math.sin(_shakeTimer * _shakeFreq * math.pi * 2)          * magnitude
-	local oy = math.sin(_shakeTimer * _shakeFreq * math.pi * 2.3 + 1.1) * magnitude
-	_shakeOffset = Vector3.new(ox, oy, 0)
-
-	Camera.CFrame = Camera.CFrame * CFrame.new(_shakeOffset)
-end)
+local _shakePower   = 0
+local _shakeFreq    = 18
+local _shakeTimer   = 0
+local _shakeDurLeft = 0
 
 local function _triggerCameraShake(comboIndex: number)
 	local profile = CombatSettings.CameraShake[comboIndex]
 		or CombatSettings.CameraShake[1]
 
-	-- If a shake is already running, take the stronger value
 	_shakePower   = math.max(_shakePower, profile.Magnitude)
 	_shakeFreq    = profile.Frequency
-	-- Reset duration (extend if a new hit comes in fast)
 	_shakeDurLeft = profile.Duration
 	_shakeTimer   = 0
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 --  STUN REMOTE HANDLERS
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 
--- StunApplied (victim: Player, duration: number)
 RE_StunApplied.OnClientEvent:Connect(function(victim: Player, _duration: number)
 	if victim ~= LocalPlayer then return end
 	_locallyStunned = true
-	-- No GUI — ragdoll physics is the visual
 end)
 
--- StunReleased (victim: Player, reason: string)
 RE_StunReleased.OnClientEvent:Connect(function(victim: Player, _reason: string)
 	if victim ~= LocalPlayer then return end
 	_locallyStunned = false
 end)
 
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 --  RAGDOLL REMOTE HANDLERS
---  Server tells ALL clients to disable / re-enable the victim's Animate script.
---  Without this, Roblox's default animation controller fights the physics joints
---  and the ragdoll looks stiff / snaps back to idle pose.
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local function _setAnimateEnabled(char: Model, enabled: boolean)
-	-- The "Animate" LocalScript lives directly under the character model
 	local animScript = char:FindFirstChild("Animate")
 	if animScript and animScript:IsA("LocalScript") then
 		animScript.Disabled = not enabled
 	end
-	-- Also stop all currently-playing animation tracks so they don't hold poses
 	local humanoid = char:FindFirstChildOfClass("Humanoid")
 	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
 	if animator and not enabled then
@@ -225,41 +324,31 @@ local function _setAnimateEnabled(char: Model, enabled: boolean)
 	end
 end
 
--- Ragdoll: victim: Player, active: boolean
 RE_Ragdoll.OnClientEvent:Connect(function(victim: Player, _active: boolean)
 	local char = victim.Character
 	if not char then return end
-
-	-- Disable Animate on ALL clients so nobody sees animation fighting the physics
 	_setAnimateEnabled(char, false)
-
-	-- Track ragdoll state for the local player (blocks input)
 	if victim == LocalPlayer then
 		_locallyRagdolled = true
 		_locallyStunned   = true
 	end
 end)
 
--- RagdollEnd: victim: Player
 RE_RagdollEnd.OnClientEvent:Connect(function(victim: Player)
 	local char = victim.Character
 	if not char then return end
-
 	_setAnimateEnabled(char, true)
-
 	if victim == LocalPlayer then
 		_locallyRagdolled = false
 		_locallyStunned   = false
 	end
 end)
 
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 --  INPUT → INTENT
-
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local function _onM1Input()
-	-- Can't attack while stunned (server also gates, avoids the round trip)
 	if _locallyStunned or _locallyRagdolled then return end
 
 	local now = os.clock()
@@ -274,19 +363,13 @@ local function _onM1Input()
 	RE_UsedM1:FireServer()
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  INPUT LISTENER  (M1 attack + Q tech roll)
--- ═══════════════════════════════════════════════════════════════════════════════
-
 UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
 	if gameProcessed then return end
 
-	-- M1 attack
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		_onM1Input()
 	end
 
-	-- Tech roll escape (Q while stunned)
 	if input.KeyCode == TECH_ROLL_KEY and _locallyStunned then
 		local now = os.clock()
 		local cd  = CombatSettings.Stun.TechRoll.Cooldown
@@ -297,15 +380,9 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 	end
 end)
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: ANIMATION PLAYBACK  (swing anims + hit reactions)
---
---  Hit reactions (HitReaction1–5) are played DIRECTLY on the victim's Animator,
---  bypassing the Animate LocalScript entirely. This means they work even while
---  the character is ragdolled (Animate is disabled during ragdoll).
---
---  Swing anims (M1–M5) play on the attacker normally.
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  SERVER → CLIENT: ANIMATION PLAYBACK
+-- ══════════════════════════════════════════════════════════════════════════════
 
 RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: string, _comboIndex: number)
 	local character = targetPlayer.Character
@@ -325,15 +402,12 @@ RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: 
 		or animKey:sub(1, 18) == "BlockingHitReaction"
 
 	if isHitReaction then
-		-- ── Play directly on Animator — works even with Animate disabled ─────
 		local humanoid  = character:FindFirstChildOfClass("Humanoid")
 		local animator  = humanoid and humanoid:FindFirstChildOfClass("Animator")
 		if not animator then return end
 
-		-- Stop any other hit reaction already playing so they don't stack
 		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
 			local name = track.Animation and track.Animation.AnimationId or ""
-			-- Stop other reactions but not the ragdoll/idle if Animate is off
 			if name ~= animId then
 				local isReact = false
 				for _, key in ipairs({ "HitReaction1","HitReaction2","HitReaction3","HitReaction4","HitReaction5",
@@ -348,21 +422,17 @@ RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: 
 			end
 		end
 
-		-- Load + play the reaction track fresh every hit (short, one-shot)
 		local anim = Instance.new("Animation")
 		anim.AnimationId = animId
 		local track = animator:LoadAnimation(anim)
 		anim:Destroy()
-		track.Priority = Enum.AnimationPriority.Action4  -- above everything
-		track:Play(0)   -- no fade-in; snappy hit feedback
-		-- Auto-stop after it finishes so it doesn't hold the last frame
+		track.Priority = Enum.AnimationPriority.Action4
+		track:Play(0)
 		track.Stopped:Connect(function() track:Destroy() end)
 	else
-		-- ── Swing animation (attacker) — normal path ─────────────────────────
 		local track = _getTrack(character, animId)
 		if not track then return end
 
-		-- Stop conflicting swing anims on rapid combos
 		if animKey:sub(1, 1) == "M" and tonumber(animKey:sub(2)) then
 			for i = 1, 5 do
 				local prevKey  = "M" .. tostring(i)
@@ -381,31 +451,70 @@ RE_ApplyHitEffect.OnClientEvent:Connect(function(targetPlayer: Player, animKey: 
 	end
 end)
 
--- ═══════════════════════════════════════════════════════════════════════════════
---  SERVER → CLIENT: HIT CONFIRM  (highlight + sound + shake)
---  Payload: attacker: Player, victim: Player, comboIndex: number
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  SERVER → CLIENT: HIT CONFIRM
+-- ══════════════════════════════════════════════════════════════════════════════
 
 RE_HitConfirm.OnClientEvent:Connect(function(attacker: Player, victim: Player, comboIndex: number)
-	-- ── 1. Red highlight on victim (every client renders this) ───────────────
+	-- Red highlight on victim (every client)
 	local victimChar = victim.Character
 	if victimChar then
 		_flashHighlight(victimChar)
 	end
 
-	-- ── 2. Hit sound + camera shake — ONLY on the attacker's own client ───────
+	-- Sound + shake + FOV kick + camera punch — attacker's client only
 	if attacker ~= LocalPlayer then return end
 
 	_playHitSound(comboIndex)
 	_triggerCameraShake(comboIndex)
+	_triggerFOVKickFull(comboIndex)    -- [NEW] FOV spike → spring back to base
+	_triggerCameraPunch(comboIndex)    -- [NEW] forward lurch → spring back
 end)
 
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
+--  MAIN RENDER LOOP  — shake + FOV tick + camera punch tick
+-- ══════════════════════════════════════════════════════════════════════════════
+
+RunService.RenderStepped:Connect(function(dt: number)
+	-- ── Existing camera shake ────────────────────────────────────────────────
+	if _shakeDurLeft > 0 then
+		_shakeDurLeft = _shakeDurLeft - dt
+		_shakeTimer   = _shakeTimer   + dt
+
+		local progress  = math.max(0, _shakeDurLeft) / math.max(0.001, _shakeTimer + _shakeDurLeft)
+		local magnitude = _shakePower * progress
+
+		local ox = math.sin(_shakeTimer * _shakeFreq * math.pi * 2)          * magnitude
+		local oy = math.sin(_shakeTimer * _shakeFreq * math.pi * 2.3 + 1.1) * magnitude
+		_shakeOffset = Vector3.new(ox, oy, 0)
+
+		Camera.CFrame = Camera.CFrame * CFrame.new(_shakeOffset)
+	else
+		_shakeOffset = Vector3.zero
+	end
+
+	-- ── FOV kick lerp back to base  [NEW] ───────────────────────────────────
+	_tickFOVFull(dt)
+
+	-- ── Camera punch spring  [NEW] ───────────────────────────────────────────
+	_tickCameraPunch(dt)
+end)
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  CHARACTER LIFECYCLE
--- ═══════════════════════════════════════════════════════════════════════════════
+-- ══════════════════════════════════════════════════════════════════════════════
 
 local function _onCharacterAdded(character: Model)
 	_clearCache(character)
+	-- Reset FOV so respawn doesn't inherit a mid-kick FOV state
+	_fovCurrent     = FOV_BASE
+	_fovTarget      = FOV_BASE
+	_fovReturnSpeed = 12
+	Camera.FieldOfView = FOV_BASE
+	-- Reset punch state
+	_punchOffset   = 0
+	_punchVelocity = 0
+	_punchApplied  = 0
 	character.AncestryChanged:Connect(function(_, parent)
 		if not parent then _clearCache(character) end
 	end)
