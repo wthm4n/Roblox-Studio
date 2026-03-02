@@ -13,7 +13,7 @@
 	  • Camera tilt on side dashes uses additive delta roll, NOT tweening Camera.CFrame
 ]]
 
-print("[CombatController] Loading...")
+print("[CombatController] Started")
 
 -- ── Services ──────────────────────────────────────────────────────────────────
 local Players           = game:GetService("Players")
