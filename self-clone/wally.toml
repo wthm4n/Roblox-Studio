@@ -1,0 +1,8 @@
+[package]
+name = "oxryn/combatsystem"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+
+[server-dependencies]
+ProfileService = "firebird702/profileservice@1.1.0"
