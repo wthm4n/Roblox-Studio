@@ -4,6 +4,11 @@ local FormationSystem = {}
 FormationSystem.Name = "FormationSystem"
 
 local function updateAnchor(army)
+	if army.Task then
+		
+		return
+	end
+
 	local owner = army.Owner
 	local character = owner.Character
 	if not character then
@@ -16,6 +21,7 @@ local function updateAnchor(army)
 	end
 
 	army.Anchor = rootPart.CFrame
+	army.Shape = "Wedge"
 end
 
 function FormationSystem.Update(_dt)
