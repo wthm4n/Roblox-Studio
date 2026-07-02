@@ -1,6 +1,3 @@
--- ReplicatedStorage/Framework/Signal.lua
--- Minimal pure-Lua signal. No BindableEvent overhead.
-
 local Signal = {}
 Signal.__index = Signal
 
