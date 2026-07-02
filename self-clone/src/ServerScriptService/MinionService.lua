@@ -1,34 +1,27 @@
--- ServerScriptService/MinionService.lua
--- Spawns plain minion objects (NOT an entity/component framework).
--- A minion is just: { Model, Humanoid, Animator, Movement, Animation }.
-
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
 local MovementComponent = require(ReplicatedStorage.Components.MovementComponent)
 local AnimationComponent = require(ReplicatedStorage.Components.AnimationComponent)
+local CollisionService = require(script.Parent.CollisionService)
 
 local MinionService = {}
-MinionService._minionsByArmy = {} -- [army] = { minion, minion, ... }
+MinionService._minionsByArmy = {} 
 
--- REQUIRED SETUP (not code, just Studio setup):
---   ServerStorage
---     └── Assets
---          └── MinionTemplate   (Model, PrimaryPart set, contains Humanoid)
---
--- The Humanoid needs an Animator (Roblox adds one automatically at runtime
--- if missing, but it's cleaner to have it baked into the template).
+
 local ASSETS_FOLDER = ServerStorage:WaitForChild("Assets")
 local MINION_TEMPLATE = ASSETS_FOLDER:WaitForChild("MinionTemplate")
 
--- Swap these for your real animation asset ids.
+
 local IDLE_ANIMATION_ID = "rbxassetid://0000000000"
 local WALK_ANIMATION_ID = "rbxassetid://0000000000"
 
-local function buildMinion(spawnCFrame)
+local function buildMinion(owner, spawnCFrame)
 	local model = MINION_TEMPLATE:Clone()
 	model:PivotTo(spawnCFrame)
 	model.Parent = workspace
+
+	CollisionService.AssignMinion(owner, model)
 
 	local humanoid = model:WaitForChild("Humanoid")
 	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
@@ -62,7 +55,7 @@ end
 function MinionService.Spawn(army, spawnCFrame)
 	spawnCFrame = spawnCFrame or army.Anchor
 
-	local minion = buildMinion(spawnCFrame)
+	local minion = buildMinion(army.Owner, spawnCFrame)
 	army:AddMinion(minion)
 
 	MinionService._minionsByArmy[army] = MinionService._minionsByArmy[army] or {}
