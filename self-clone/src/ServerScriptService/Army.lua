@@ -12,9 +12,12 @@ function Army.new(owner)
 		Shape = "Wedge",
 		Spacing = 6,
 		FormationConfig = {
-    		Angle = 20,
+    		Angle = 30,
 		},
 		Anchor = CFrame.new(),
+
+		Task = nil,       
+		TaskTarget = nil, 
 	}, Army)
 end
 
