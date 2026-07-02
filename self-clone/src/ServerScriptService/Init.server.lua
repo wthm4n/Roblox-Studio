@@ -7,8 +7,10 @@ local ArmyService = require(script.Parent.ArmyService)
 local MinionService = require(script.Parent.MinionService)
 local FormationSystem = require(script.Parent.FormationSystem)
 local CollisionService = require(script.Parent.CollisionService)
+local ResourceService = require(script.Parent.ResourceService)
+local TaskService = require(script.Parent.TaskService)
 
-local STARTING_MINIONS = 100
+local STARTING_MINIONS = 6
 
 local function onPlayerAdded(player)
 	player.CharacterAdded:Connect(function(character)
@@ -31,7 +33,18 @@ end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
 
+ResourceService.Init()
+
+ResourceService.NodeClicked:Connect(function(player, node)
+	local army = ArmyService.GetArmy(player)
+	if army then
+		TaskService.AssignHarvest(army, node)
+	end
+end)
+
 Scheduler.Register(FormationSystem)
+Scheduler.Register(TaskService)
 Scheduler.Start()
 
 print("[Init] Phase 1 systems started: Army -> Minions -> Formation -> Movement -> Animation")
+print("[Init] Phase 2 systems started: ResourceNode -> ResourceService -> TaskService")
