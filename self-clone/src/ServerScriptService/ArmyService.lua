@@ -1,12 +1,9 @@
--- ServerScriptService/ArmyService.lua
--- Owns the mapping of Player -> Army. Nothing fancy.
-
 local Players = game:GetService("Players")
 
 local Army = require(script.Parent.Army)
 
 local ArmyService = {}
-ArmyService._armies = {} -- [player] = Army
+ArmyService._armies = {} 
 
 function ArmyService.CreateArmy(player)
 	local army = Army.new(player)
