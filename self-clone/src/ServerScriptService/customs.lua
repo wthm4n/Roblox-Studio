@@ -161,9 +161,8 @@ function junk.mergeTables(a, b)
 end
 
 
-return junk
-
-
+function generateRandomString(length)
+    local length = length or 8
     local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     local result = ""
     for i = 1, length do
@@ -172,3 +171,5 @@ return junk
     end
     return result
 end
+
+return junk
